@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>OpenTableBot</title>
+    <style>
+      body { font: 14px system-ui, sans-serif; width: 280px; margin: 16px; color: #202124; }
+      h1 { font-size: 16px; margin: 0 0 12px; }
+      label { display: block; margin: 8px 0 4px; }
+      input { box-sizing: border-box; width: 100%; padding: 7px; }
+      button { margin-top: 12px; padding: 7px 12px; }
+      #status { margin-top: 12px; overflow-wrap: anywhere; }
+    </style>
+  </head>
+  <body>
+    <h1>OpenTableBot read-only bridge</h1>
+    <label for="code">One-time pairing code</label>
+    <input id="code" maxlength="8" autocomplete="off" spellcheck="false">
+    <label for="port">Local port</label>
+    <input id="port" type="number" min="1" max="65535" value="38471">
+    <button id="pair" type="button">Pair</button>
+    <div id="status" role="status" aria-live="polite">Checking status…</div>
+    <script src="popup.js"></script>
+  </body>
+</html>

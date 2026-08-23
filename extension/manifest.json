@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "OpenTableBot Read-Only Bridge",
+  "version": "0.1.0",
+  "description": "Pairs normal Chrome with the local OpenTableBot read-only bridge.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://www.opentable.com/*", "http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "OpenTableBot",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.opentable.com/*"],
+      "js": ["main-world.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://www.opentable.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

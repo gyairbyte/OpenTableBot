@@ -2,58 +2,45 @@
 
 ## Phase 0: domain foundation (complete)
 
-- Validated booking target, slot, preview, confirmation, and policy types
-- Deterministic slot matching/ranking and fail-closed preview evaluation
-- Explicit state transitions and adapter failure categories
-- Provider-neutral adapter, storage, notification, and runner boundaries
-- Unit tests and architecture documentation
-- No OpenTable calls, browser automation, UI, or hosted infrastructure
+- Validated targets, slots, previews, confirmations, and policy types
+- Deterministic matching/ranking and fail-closed preview evaluation
+- Explicit states, adapter failure categories, and provider-neutral ports
 
-## Phase 1: normal authenticated-browser OpenTable read-only adapter (current)
+## Phase 1A: Playwright read transport (superseded)
 
-- Implement the adapter with a normal user-controlled authenticated browser
-- Check authentication and normalize read-only slot results
-- Detect challenges/access-control responses and pause; do not evade them
-- Add fixtures and contract tests with sanitized, non-personal data
-- Use a dedicated persistent Chrome profile and manual normal login
-- Observe only availability responses generated naturally by the normal page
-- Keep read and booking/write adapter contracts compile-time separated
-- Add deterministic CI without live browser tests
+The initial dedicated-profile Playwright transport was removed. Live testing
+showed ordinary user-controlled Chrome loaded OpenTable while Playwright-
+launched Chrome received Access Denied before authentication. The Playwright
+implementation correctly failed closed, but it is not retained as a production
+or dependency fallback.
 
-## Phase 2: booking preview and dry-run validation
+## Phase 1B: paired normal-Chrome read adapter (current)
 
-- Normalize exact seating, explicit prepaid/cancellation/no-show financial
-  terms, currency, and interaction requirements
-- Return an in-memory `PreparedBooking` whose opaque handle is passed unchanged
-  to booking and is never persisted or logged
-- Exercise the full state flow through `VALIDATING` without submitting a booking
-- Record auditable policy decisions with sensitive-data redaction
+- User-controlled Chrome and normal OpenTable sign-in
+- Thin MV3 extension with least privilege and deterministic unpacked build
+- Explicit one-use pairing and authenticated loopback WebSocket protocol
+- Fixed page-context `RestaurantsAvailability` operation only
+- In-Chrome allowlist sanitization; no browser secrets cross the boundary
+- Conservative page classification and invariant-checking slot normalization
+- Read/write adapter contracts remain compile-time separated
+- CI remains deterministic and has no live OpenTable dependency
 
-## Phase 3: controlled real booking
+Before Phase 2, complete the manual authenticated read-only smoke test, resolve
+the project license, and choose the long-term local storage/encryption model.
 
-- Add an explicit, tightly scoped booking implementation behind the adapter
-- Require target auto-book authorization and a passing fresh preview
-- Support deterministic fallback when a selected slot disappears
-- Make `BOOKED` terminal and disable further attempts for that target
+## Phase 2: booking preview and dry-run validation (not started)
 
-## Phase 4: known-drop sniper
+- Normalize exact seating, financial terms, currency, and interaction needs
+- Add an ephemeral prepared context without submitting a reservation
+- Exercise policy validation and audit redaction only
 
-- Add local scheduling around an optional known release timestamp
-- Use bounded attempts, jitter appropriate to normal load, and conservative
-  retry/backoff behavior
-- Never bypass rate limits or access controls
+## Later phases (not started)
 
-## Phase 5: cancellation watcher
+- Phase 3: controlled booking behind explicit authorization
+- Phase 4: bounded known-drop scheduling
+- Phase 5: durable cancellation watching
+- Phase 6: notifications and operational hardening
 
-- Add durable, bounded polling for cancellation-watch targets
-- Persist checkpoints and avoid duplicate work across process restarts
-- Keep the same matcher, policy, and terminal-success semantics
-
-## Phase 6: notifications and operational hardening
-
-- Implement local notification channels for booking, pause, and failure events
-- Add structured redacted logs, metrics, recovery testing, and runbooks
-- Add retention controls, health checks, concurrency guards, and safe shutdown
-
-Before Phase 2, complete an authenticated local read-only smoke test, resolve the
-project license, and choose the long-term local storage/encryption model.
+Every later phase retains the prohibition on CAPTCHA solving, access-control
+evasion, stealth techniques, proxy rotation, fingerprint impersonation, and
+rate-limit bypass.

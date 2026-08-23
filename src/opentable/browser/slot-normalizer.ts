@@ -10,7 +10,7 @@ import {
   AdapterFailureCategory,
   OpenTableAdapterError,
 } from "../errors.js";
-import type { AvailabilityObservation } from "./availability-observer.js";
+import type { AvailabilityObservation } from "./availability-types.js";
 
 const rawAvailableSlotSchema = z
   .object({

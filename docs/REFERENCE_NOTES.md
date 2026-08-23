@@ -1,29 +1,30 @@
 # Reference Notes
 
-No implementation source was copied into Phase 0. The references informed only
-the architectural concepts described below.
+## `chrischall/fetchproxy`
+
+- Repository: <https://github.com/chrischall/fetchproxy>
+- License: MIT when reviewed
+- Phase 1B use: the MAIN-world Apollo-link wrapping and operation-document
+  capture pattern was adapted and narrowed to one fixed read-only operation.
+  OpenTableBot's same-origin fetch-template fallback was independently added
+  when current live pages did not expose the Apollo client globally.
+- Differences: OpenTableBot has no arbitrary operation/query API, validates all
+  bridge messages, sanitizes output inside Chrome, and uses explicit pairing.
+
+The required attribution and MIT license text are reproduced in
+`THIRD_PARTY_NOTICES.md`.
 
 ## `chrischall/opentable-mcp`
 
 - Repository: <https://github.com/chrischall/opentable-mcp>
-- License: MIT at the time reviewed
-- Useful concepts: a clean provider client boundary, normalized slot and booking
-  details, separate slot-lock/submission concerns, saved-card-aware booking
-  terms, and structured errors
-- Phase 0 treatment: concepts were re-expressed as independent provider-neutral
-  types and the `OpenTableAdapter` interface; no request or booking code was used
+- License: MIT when reviewed
+- Phase 1B use: high-level availability variable names informed the fixed
+  request shape. No booking, lock, submission, stealth, or proxy code was used.
 
 ## `nancyychen-bot/mise-en-place`
 
-- Repository: <https://github.com/nancyychen-bot/mise-en-place>
-- License: no license was confirmed at the time reviewed
-- Useful concepts: target monitoring, known-time scheduled attempts,
-  preferred-time choice, fallback/retry behavior, notifications, and disabling
-  auto-book after success
-- Phase 0 treatment: concepts were independently modeled in the target, ranking,
-  state machine, and future plan; source was not copied
+- License: no license was confirmed when reviewed
+- Treatment: architectural ideas only; no source was copied.
 
-The licensing distinction matters: an MIT-licensed reference can be reused only
-under its license and attribution terms, while an unlicensed repository must be
-treated as all-rights-reserved. This project currently has no owner-selected
-license of its own, so no `LICENSE` file was added.
+This repository has no owner-selected project license. Reference licenses and
+attribution do not license original OpenTableBot code.

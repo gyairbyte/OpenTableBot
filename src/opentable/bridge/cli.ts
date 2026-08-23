@@ -1,10 +1,9 @@
-import { createInterface } from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
 import { BookingTargetSchema } from "../../domain/booking-target.js";
 import type { SeatingType } from "../../domain/primitives.js";
 import { OpenTableAdapterError } from "../errors.js";
-import { OpenTableBrowserSession } from "./browser-session.js";
-import { PlaywrightOpenTableReadAdapter } from "./read-adapter.js";
+import { OpenTableBridgeClient } from "./client.js";
+import { loadCredential } from "./credential-store.js";
+import { BrowserBridgeOpenTableReadAdapter } from "./read-adapter.js";
 
 const allSeatingTypes: readonly SeatingType[] = [
   "standard",
@@ -31,46 +30,15 @@ function parseFlags(args: readonly string[]): ReadonlyMap<string, string> {
 
 function requiredFlag(flags: ReadonlyMap<string, string>, name: string): string {
   const value = flags.get(name);
-  if (value === undefined || value.trim() === "") {
-    throw new Error(`Missing required --${name} argument`);
-  }
+  if (value === undefined || value.trim() === "") throw new Error(`Missing required --${name} argument`);
   return value;
 }
 
-async function runLogin(
-  session: OpenTableBrowserSession,
-  adapter: PlaywrightOpenTableReadAdapter,
-): Promise<void> {
-  await session.start();
-  await session.openLoginPage();
-  output.write(
-    [
-      "A dedicated OpenTableBot Chrome window is open.",
-      "Use OpenTable's normal interface to sign in. Credentials stay in the browser.",
-      "Do not close the browser window while this command is running.",
-      "",
-    ].join("\n"),
-  );
-  const prompt = createInterface({ input, output });
-  try {
-    await prompt.question("Press Enter after normal OpenTable sign-in is complete... ");
-  } finally {
-    prompt.close();
-  }
-  const result = await adapter.checkAuthentication();
-  output.write(`${JSON.stringify(result)}\n`);
-}
-
-async function runCheckAuth(adapter: PlaywrightOpenTableReadAdapter): Promise<void> {
-  output.write(`${JSON.stringify(await adapter.checkAuthentication())}\n`);
-}
-
 async function runSlots(
-  adapter: PlaywrightOpenTableReadAdapter,
+  adapter: BrowserBridgeOpenTableReadAdapter,
   args: readonly string[],
 ): Promise<void> {
   const flags = parseFlags(args);
-  const partySize = Number(requiredFlag(flags, "party"));
   const date = requiredFlag(flags, "date");
   const target = BookingTargetSchema.parse({
     id: "phase-1-read-only-cli",
@@ -80,7 +48,7 @@ async function runSlots(
       timeZone: requiredFlag(flags, "timezone"),
     },
     dateRange: { startDate: date, endDate: date },
-    partySize,
+    partySize: Number(requiredFlag(flags, "party")),
     timeWindow: {
       earliest: requiredFlag(flags, "earliest"),
       latest: requiredFlag(flags, "latest"),
@@ -96,10 +64,9 @@ async function runSlots(
     },
     mode: "cancellation-watch",
   });
-
   const slots = await adapter.findSlots(target);
   if (slots.length === 0) {
-    output.write("No normalized slots were observed.\n");
+    console.log("No normalized slots were returned.");
     return;
   }
   console.table(
@@ -116,18 +83,20 @@ async function runSlots(
 
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
-  if (!new Set(["login", "check-auth", "slots"]).has(command ?? "")) {
-    throw new Error("Usage: cli.ts <login|check-auth|slots> [--name value ...]");
+  if (command !== "check-auth" && command !== "slots") {
+    throw new Error("Usage: cli.ts <check-auth|slots> [--name value ...]");
   }
-
-  const session = new OpenTableBrowserSession();
-  const adapter = new PlaywrightOpenTableReadAdapter(session, {
+  const credential = await loadCredential();
+  const client = new OpenTableBridgeClient({ credential });
+  const flags = command === "slots" ? parseFlags(args) : new Map<string, string>();
+  const databaseRegion = flags.get("database-region");
+  const adapter = new BrowserBridgeOpenTableReadAdapter(client, {
+    ...(databaseRegion === undefined ? {} : { databaseRegion }),
     onDiagnostic: (message) => console.warn(message),
   });
   try {
-    if (command === "login") await runLogin(session, adapter);
-    if (command === "check-auth") await runCheckAuth(adapter);
-    if (command === "slots") await runSlots(adapter, args);
+    if (command === "check-auth") console.log(JSON.stringify(await adapter.checkAuthentication()));
+    else await runSlots(adapter, args);
   } finally {
     await adapter.close();
   }

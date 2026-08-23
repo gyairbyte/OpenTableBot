@@ -3,7 +3,7 @@ import { OpenTableAdapterError } from "../src/opentable/errors.js";
 import {
   localDateTimeToOffsetIso,
   normalizeAvailabilityObservation,
-} from "../src/opentable/playwright/slot-normalizer.js";
+} from "../src/opentable/browser/slot-normalizer.js";
 import { makeTarget } from "./fixtures.js";
 import { makeAvailabilityObservation } from "./opentable-fixtures.js";
 

@@ -12,7 +12,12 @@
     "verbatimModuleSyntax": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
-    "types": ["node", "vitest/globals"]
+    "types": ["node", "vitest/globals", "chrome"]
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "eslint.config.js"]
+  "include": [
+    "src/**/*.ts",
+    "extension/src/**/*.ts",
+    "tests/**/*.ts",
+    "eslint.config.js"
+  ]
 }

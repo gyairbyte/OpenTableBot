@@ -3,7 +3,7 @@ import {
   classifyOpenTablePage,
   OpenTablePageKind,
   type OpenTablePageEvidence,
-} from "../src/opentable/playwright/page-classifier.js";
+} from "../src/opentable/browser/page-classifier.js";
 
 function evidence(
   overrides: Partial<OpenTablePageEvidence> = {},
@@ -20,6 +20,23 @@ function evidence(
 }
 
 describe("OpenTable page classification", () => {
+  it("accepts the current signed-in header's two non-personal indicators", () => {
+    expect(
+      classifyOpenTablePage(
+        evidence({
+          url: "https://www.opentable.com/",
+          title: "OpenTable",
+          bodyText: "Restaurant discovery",
+          authenticatedSignals: [
+            "authenticated-account-control",
+            "authenticated-user-menu",
+          ],
+          unauthenticatedSignals: [],
+        }),
+      ).kind,
+    ).toBe(OpenTablePageKind.AUTHENTICATED);
+  });
+
   it("classifies an authenticated normal page using multiple signals", () => {
     expect(classifyOpenTablePage(evidence()).kind).toBe(
       OpenTablePageKind.AUTHENTICATED,

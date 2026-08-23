@@ -1,8 +1,8 @@
 # OpenTableBot
 
 Local-first engineering foundation for a pre-authorized restaurant reservation
-assistant. Phase 1 adds an authenticated, read-only OpenTable browser adapter
-while keeping all booking operations outside the implementation.
+assistant. Phase 1B connects a normal, user-controlled Chrome session to a
+local Node.js process for authenticated, read-only OpenTable availability.
 
 No booking preparation, slot locking, checkout interaction, account mutation,
 or reservation submission is implemented.
@@ -11,28 +11,49 @@ or reservation submission is implemented.
 
 - Node.js 22 (see `.nvmrc`)
 - npm
-- Google Chrome installed locally for the Phase 1 browser commands
+- Google Chrome with developer mode available for the unpacked extension
 
 ## Development
 
 ```sh
-npm install
+npm ci
 npm run check
 npm run build
+npm run extension:build
 ```
 
-The `check` script runs linting, TypeScript typechecking, and all Vitest tests.
+The deterministic extension output is `dist/extension`. CI runs the same
+lint, typecheck, test, Node build, extension build, and audit checks.
 
-## Phase 1 read-only browser commands
+## Phase 1B local setup
 
-The browser adapter launches normal installed Chrome in a headed persistent
-context. Its dedicated profile defaults to
-`.local/opentable-browser-profile/` and never attaches to an everyday Chrome
-profile. Override it with `OPENTABLE_BROWSER_PROFILE_DIR` when needed.
+1. Build the extension with `npm run extension:build`.
+2. Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**,
+   and select this repository's `dist/extension` directory.
+3. Start the local bridge and create a five-minute, one-use pairing code:
+
+   ```sh
+   npm run opentable:bridge -- pair
+   ```
+
+4. Open the extension popup, enter the code, and keep the bridge process
+   running. The extension stores only the random local bridge credential in
+   `chrome.storage.local`; Node stores its copy under ignored
+   `.local/bridge/credential.json`. The credential is never printed.
+5. Use normal Chrome to open `https://www.opentable.com/` and sign in through
+   the site's normal UI. The project never asks for a username or password.
+
+Check bridge/page state with `npm run opentable:status`, then check the visible
+page's authentication evidence with:
 
 ```sh
-npm run opentable:login
 npm run opentable:check-auth
+```
+
+After visiting an OpenTable restaurant/search page so Chrome has observed the
+page's availability operation, perform one read-only query:
+
+```sh
 npm run opentable:slots -- \
   --restaurant-id 12345 \
   --restaurant-name "Example Restaurant" \
@@ -44,50 +65,51 @@ npm run opentable:slots -- \
   --timezone America/New_York
 ```
 
-The login command opens the dedicated profile and lets the user authenticate
-only through OpenTable's normal browser experience. The application never asks
-for or stores a password. Cookies and session state remain browser-managed in
-the ignored local profile and are never exported or logged.
+The command never clicks a time or enters checkout. If restaurant metadata is
+needed for a smoke test, provide the normal OpenTable restaurant URL rather
+than searching provider internals manually.
 
-Availability is acquired by navigating the normal search page and observing
-the structured availability response that the page naturally generates. The
-adapter does not synthesize private requests, click reservation slots, or rank
-results. See [OpenTable browser session](docs/OPENTABLE_BROWSER_SESSION.md).
+Stop the bridge with Ctrl+C. Revoke an existing pairing with:
+
+```sh
+npm run opentable:bridge -- revoke
+```
+
+See [Chrome bridge operations](docs/OPENTABLE_BROWSER_SESSION.md) for setup,
+recovery, threat boundaries, and permission rationale.
 
 ## Safety model
 
-A booking can proceed only when the exact slot and preview remain inside the
-target's pre-authorized date, time, seating, prepaid, fee, currency, and
-auto-book policy. Unknown prepaid, cancellation, or no-show amounts fail closed
-instead of being interpreted as zero. Authentication failures, challenge pages,
-access-control responses, unexpected terms, strong-customer-authentication
-prompts, and ambiguous responses are designed to pause processing.
+The WebSocket server binds only to `127.0.0.1`. Both the extension and local
+controller authenticate with a random paired credential. Messages are
+versioned, strictly validated, deadline-bound, and limited to status,
+authentication evidence, and availability. The extension exposes no arbitrary
+page query or script execution interface.
 
-Future booking preparation returns an opaque, potentially sensitive in-memory
-handle. It must never be persisted, logged, included in notifications, or
-exposed to users.
+OpenTable cookies, storage, headers, and account tokens never leave Chrome.
+Before an availability result crosses the extension boundary it is reduced to
+restaurant/day identifiers and non-sensitive slot time/seating fields. Booking
+hashes and availability tokens are discarded. Node revalidates restaurant,
+date, time, party, time zone, and payload shape before returning normalized
+slots.
 
-This project will not implement CAPTCHA solving, anti-bot or access-control
-evasion, stealth browser techniques, proxy rotation, fingerprint impersonation,
-or rate-limit bypass.
+Challenge, access-denied, rate-limited, unauthenticated, malformed, and
+unclassifiable states fail closed. This project will not implement CAPTCHA
+solving, anti-bot or access-control evasion, stealth techniques, proxy rotation,
+fingerprint impersonation, or rate-limit bypass.
 
 ## Structure
 
-- `src/domain`: validated targets, normalized reservation data, matching,
-  ranking, policy evaluation, and state transitions
-- `src/opentable`: the isolated adapter contract and structured failure taxonomy
-- `src/opentable/playwright`: persistent browser session, page classification,
-  natural-response observation, normalization, and read-only CLI
-- `src/runner`: provider-neutral booking planning/orchestration boundary
-- `src/storage`: persistence port
-- `src/notifications`: notification port
-- `tests`: pure domain and failure-classification tests
-- `docs`: architecture, phased implementation plan, and reference notes
-
-See [Architecture](docs/ARCHITECTURE.md) and the
-[Implementation plan](docs/IMPLEMENTATION_PLAN.md) for the intended evolution.
+- `extension`: MV3 manifest, popup, page/content bridge, and deterministic build
+- `src/domain`: targets, normalized reservation data, matching, policy, state
+- `src/opentable/browser`: conservative page classification and slot normalization
+- `src/opentable/bridge`: loopback protocol, pairing, broker, client, and read adapter
+- `src/runner`: provider-neutral booking planning boundary (future phases)
+- `tests`: domain, classifier, normalizer, bridge, and protocol tests
+- `docs`: architecture, operations, plan, and reference notices
 
 ## License
 
 No project license has been selected by the repository owner, so no license is
-granted by this repository at this time.
+granted by this repository at this time. See `THIRD_PARTY_NOTICES.md` for the
+MIT-licensed reference code adapted in Phase 1B.

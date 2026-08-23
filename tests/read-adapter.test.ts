@@ -1,62 +1,55 @@
 import { describe, expect, it } from "vitest";
-import type { OpenTableReadAdapter } from "../src/opentable/adapter.js";
-import {
-  AdapterFailureCategory,
-} from "../src/opentable/errors.js";
-import type { OpenTableAdapterError } from "../src/opentable/errors.js";
-import type {
-  BrowserAvailabilityResult,
-  OpenTableBrowserSessionPort,
-} from "../src/opentable/playwright/browser-session.js";
-import type { OpenTablePageEvidence } from "../src/opentable/playwright/page-classifier.js";
-import { PlaywrightOpenTableReadAdapter } from "../src/opentable/playwright/read-adapter.js";
+import type { AuthenticationStatus, OpenTableReadAdapter } from "../src/opentable/adapter.js";
+import { AdapterFailureCategory, type OpenTableAdapterError } from "../src/opentable/errors.js";
+import type { OpenTableBridgeClientPort } from "../src/opentable/bridge/read-adapter.js";
+import { BrowserBridgeOpenTableReadAdapter } from "../src/opentable/bridge/read-adapter.js";
+import type { FindSlotsResult } from "../src/opentable/bridge/protocol.js";
 import { makeTarget } from "./fixtures.js";
 import { makeAvailabilityObservation } from "./opentable-fixtures.js";
 
-const authenticatedEvidence: OpenTablePageEvidence = {
-  url: "https://www.opentable.com/user/dining-dashboard",
-  title: "My reservations",
-  bodyText: "Dining history",
-  httpStatus: 200,
-  authenticatedSignals: ["authenticated-url", "authenticated-content"],
-  unauthenticatedSignals: [],
-};
+function availabilityData(): FindSlotsResult["data"] {
+  const payload = makeAvailabilityObservation().payload as {
+    readonly data: FindSlotsResult["data"];
+  };
+  return payload.data;
+}
 
-const normalEvidence: OpenTablePageEvidence = {
-  url: "https://www.opentable.com/s",
-  title: "Restaurant availability",
-  bodyText: "Choose a time",
-  httpStatus: 200,
-  authenticatedSignals: [],
-  unauthenticatedSignals: [],
-};
+class FakeBridgeClient implements OpenTableBridgeClientPort {
+  constructor(
+    private readonly response: FindSlotsResult = {
+      protocolVersion: 1,
+      id: "response-id",
+      type: "FIND_SLOTS_RESULT",
+      request: {
+        restaurantId: "restaurant-123",
+        date: "2026-09-01",
+        time: "19:00",
+        partySize: 2,
+        databaseRegion: "NA",
+      },
+      data: availabilityData(),
+    },
+  ) {}
 
-class FakeBrowserSession implements OpenTableBrowserSessionPort {
-  constructor(private readonly availabilityResult: BrowserAvailabilityResult) {}
-
-  async start(): Promise<void> {}
-  async close(): Promise<void> {}
-  async openLoginPage(): Promise<void> {}
-  async getAuthenticationEvidence(): Promise<OpenTablePageEvidence> {
-    return authenticatedEvidence;
+  async connect(): Promise<void> {}
+  close(): void {}
+  async authenticationStatus(): Promise<AuthenticationStatus> {
+    return { authenticated: true };
   }
-  async observeAvailability(): Promise<BrowserAvailabilityResult> {
-    return this.availabilityResult;
+  async findSlots(): Promise<FindSlotsResult> {
+    return this.response;
   }
 }
 
-describe("PlaywrightOpenTableReadAdapter", () => {
-  it("implements only the read contract and returns verified normalized slots", async () => {
-    const adapter: OpenTableReadAdapter = new PlaywrightOpenTableReadAdapter(
-      new FakeBrowserSession({
-        pageEvidence: normalEvidence,
-        outcome: {
-          kind: "availability",
-          observation: makeAvailabilityObservation(),
-        },
-      }),
-    );
+class UnauthenticatedBridgeClient extends FakeBridgeClient {
+  override async authenticationStatus(): Promise<{ readonly authenticated: false; readonly reason: "required" }> {
+    return { authenticated: false, reason: "required" };
+  }
+}
 
+describe("BrowserBridgeOpenTableReadAdapter", () => {
+  it("implements only the read contract and returns verified normalized slots", async () => {
+    const adapter: OpenTableReadAdapter = new BrowserBridgeOpenTableReadAdapter(new FakeBridgeClient());
     const slots = await adapter.findSlots(makeTarget());
     expect(slots).toHaveLength(1);
     expect(slots[0]).toMatchObject({
@@ -69,23 +62,30 @@ describe("PlaywrightOpenTableReadAdapter", () => {
   });
 
   it("does not return slots when response invariants fail", async () => {
-    const adapter = new PlaywrightOpenTableReadAdapter(
-      new FakeBrowserSession({
-        pageEvidence: normalEvidence,
-        outcome: {
-          kind: "availability",
-          observation: makeAvailabilityObservation({
-            requestContext: {
-              ...makeAvailabilityObservation().requestContext,
-              partySize: 5,
-            },
-          }),
+    const adapter = new BrowserBridgeOpenTableReadAdapter(
+      new FakeBridgeClient({
+        protocolVersion: 1,
+        id: "response-id",
+        type: "FIND_SLOTS_RESULT",
+        request: {
+          restaurantId: "restaurant-123",
+          date: "2026-09-01",
+          time: "19:00",
+          partySize: 5,
+          databaseRegion: "NA",
         },
+        data: availabilityData(),
       }),
     );
-
     await expect(adapter.findSlots(makeTarget())).rejects.toMatchObject({
       category: AdapterFailureCategory.INVARIANT_MISMATCH,
     } satisfies Partial<OpenTableAdapterError>);
+  });
+
+  it("fails closed when Chrome reports an unauthenticated page", async () => {
+    const adapter = new BrowserBridgeOpenTableReadAdapter(new UnauthenticatedBridgeClient());
+    await expect(adapter.findSlots(makeTarget())).rejects.toMatchObject({
+      category: AdapterFailureCategory.AUTHENTICATION_REQUIRED,
+    });
   });
 });

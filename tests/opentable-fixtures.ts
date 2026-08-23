@@ -1,4 +1,4 @@
-import type { AvailabilityObservation } from "../src/opentable/playwright/availability-observer.js";
+import type { AvailabilityObservation } from "../src/opentable/browser/availability-types.js";
 
 export function makeAvailabilityObservation(
   overrides: Partial<AvailabilityObservation> = {},
