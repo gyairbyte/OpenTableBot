@@ -86,10 +86,13 @@ export class OpenTableBridgeClient {
     this.socket = socket;
     socket.on("message", (raw) => this.receive(raw));
     socket.on("close", () => {
-      if (this.socket === socket) this.socket = undefined;
+      if (this.socket !== socket) return;
+      this.socket = undefined;
       this.failAll(new Error("Bridge connection closed"));
     });
-    socket.on("error", (error) => this.failAll(error));
+    socket.on("error", (error) => {
+      if (this.socket === socket) this.failAll(error);
+    });
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve);
       socket.once("error", reject);
