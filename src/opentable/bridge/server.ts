@@ -95,11 +95,14 @@ export class OpenTableBridgeServer {
   async close(): Promise<void> {
     for (const entry of this.pending.values()) clearTimeout(entry.timer);
     this.pending.clear();
-    for (const socket of this.states.keys()) socket.close(1001, "Bridge stopping");
     const server = this.server;
     this.server = undefined;
     if (server === undefined) return;
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const closed = new Promise<void>((resolve, reject) => {
+      server.close((error) => (error === undefined ? resolve() : reject(error)));
+    });
+    for (const socket of this.states.keys()) socket.close(1001, "Bridge stopping");
+    await closed;
   }
 
   private receive(socket: WebSocket, raw: RawData): void {

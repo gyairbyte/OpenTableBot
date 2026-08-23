@@ -177,4 +177,15 @@ describe("loopback bridge server", () => {
     client.close();
     extension.close();
   });
+
+  it("stops accepting before closing active client sockets", async () => {
+    const credential = generateCredential();
+    const server = new OpenTableBridgeServer({ credential, port: 0 });
+    servers.push(server);
+    const port = await server.start();
+    const client = new OpenTableBridgeClient({ credential, port });
+    await expect(client.ping()).resolves.toMatchObject({ type: "PONG" });
+    await expect(server.close()).resolves.toBeUndefined();
+    client.close();
+  });
 });
