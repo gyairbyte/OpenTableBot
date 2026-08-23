@@ -9,7 +9,11 @@ export function makeTarget(
 ): BookingTarget {
   return {
     id: "target-1",
-    restaurant: { id: "restaurant-123", name: "Example Restaurant" },
+    restaurant: {
+      id: "restaurant-123",
+      name: "Example Restaurant",
+      timeZone: "America/New_York",
+    },
     dateRange: { startDate: "2026-09-01", endDate: "2026-09-01" },
     partySize: 2,
     timeWindow: { earliest: "18:00", latest: "20:00", preferred: "19:00" },

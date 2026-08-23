@@ -1,6 +1,6 @@
 # Implementation Plan
 
-## Phase 0: domain foundation (this phase)
+## Phase 0: domain foundation (complete)
 
 - Validated booking target, slot, preview, confirmation, and policy types
 - Deterministic slot matching/ranking and fail-closed preview evaluation
@@ -9,12 +9,16 @@
 - Unit tests and architecture documentation
 - No OpenTable calls, browser automation, UI, or hosted infrastructure
 
-## Phase 1: normal authenticated-browser OpenTable read-only adapter
+## Phase 1: normal authenticated-browser OpenTable read-only adapter (current)
 
 - Implement the adapter with a normal user-controlled authenticated browser
 - Check authentication and normalize read-only slot results
 - Detect challenges/access-control responses and pause; do not evade them
 - Add fixtures and contract tests with sanitized, non-personal data
+- Use a dedicated persistent Chrome profile and manual normal login
+- Observe only availability responses generated naturally by the normal page
+- Keep read and booking/write adapter contracts compile-time separated
+- Add deterministic CI without live browser tests
 
 ## Phase 2: booking preview and dry-run validation
 
@@ -51,5 +55,5 @@
 - Add structured redacted logs, metrics, recovery testing, and runbooks
 - Add retention controls, health checks, concurrency guards, and safe shutdown
 
-Before Phase 1, resolve the project license, confirm OpenTable terms and account
-expectations for the intended use, and choose the local storage/encryption model.
+Before Phase 2, complete an authenticated local read-only smoke test, resolve the
+project license, and choose the long-term local storage/encryption model.

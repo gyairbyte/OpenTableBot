@@ -31,10 +31,16 @@ export interface PreparedBooking {
  * The only boundary allowed to know OpenTable request, browser, or response
  * details. Domain and orchestration code depend on this normalized contract.
  */
-export interface OpenTableAdapter {
+/** Read-only operations implemented by the Phase 1 browser adapter. */
+export interface OpenTableReadAdapter {
   start?(): Promise<void>;
   checkAuthentication(): Promise<AuthenticationStatus>;
   findSlots(target: BookingTarget): Promise<readonly ReservationSlot[]>;
+  close?(): Promise<void>;
+}
+
+/** Future write-capable adapter. Phase 1 does not implement this interface. */
+export interface OpenTableBookingAdapter extends OpenTableReadAdapter {
   prepareBooking(
     target: BookingTarget,
     slot: ReservationSlot,
@@ -44,5 +50,7 @@ export interface OpenTableAdapter {
     slot: ReservationSlot,
     preparedBooking: PreparedBooking,
   ): Promise<BookingConfirmation>;
-  close?(): Promise<void>;
 }
+
+/** Backwards-compatible name for the complete booking-capable contract. */
+export type OpenTableAdapter = OpenTableBookingAdapter;

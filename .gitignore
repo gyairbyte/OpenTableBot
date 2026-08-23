@@ -14,6 +14,8 @@ Thumbs.db
 
 # Local application state and sensitive browser/account artifacts
 .local/
+# Dedicated Playwright profile; contains browser-managed session state.
+.local/opentable-browser-profile/
 data/
 *.sqlite
 *.sqlite3

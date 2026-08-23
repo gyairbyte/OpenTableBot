@@ -34,12 +34,51 @@ unknown amount. Prepaid terms distinguish no requirement, a required known
 amount, and a required unknown amount. Unknown financial terms always fail
 closed; they are never treated as zero.
 
-Only `OpenTableAdapter` may contain OpenTable-specific behavior. It converts
-provider responses into domain types and exposes authentication checking, slot
-discovery, booking preparation, and booking. Isolating this implementation prevents
-provider churn from leaking into scheduling, matching, policy, persistence,
-notifications, or state management and lets all core behavior be tested without
-network access.
+Only the adapter layer may contain OpenTable-specific behavior.
+`OpenTableReadAdapter` exposes authentication checking and slot discovery.
+`OpenTableBookingAdapter` extends it with future preparation and booking
+operations. The Phase 1 Playwright class implements only the read interface, so
+booking writes cannot be called or stubbed accidentally. The future booking
+engine continues to require the full booking interface.
+
+## Phase 1 read-only browser flow
+
+```text
+BookingTarget (restaurant id/name/time zone + requested date/party/time)
+    -> dedicated persistent headed Chrome context
+    -> normal OpenTable search-page navigation
+    -> observe page-generated availability response
+    -> verify request restaurant/date/party invariants
+    -> validate and normalize every available slot
+    -> ReservationSlot[]
+    -> provider-neutral matcher (outside adapter)
+```
+
+The persistent profile defaults to `.local/opentable-browser-profile/` and can
+be overridden with `OPENTABLE_BROWSER_PROFILE_DIR`. It is separate from the
+user's normal Chrome profile. The browser manages authentication state; the
+application neither collects credentials nor exports cookies.
+
+Authentication checking navigates normally to the user's dining dashboard and
+requires multiple independent page/session signals. A login redirect is
+unauthenticated. CAPTCHA/challenge content, access denial, rate limiting, and
+unclassifiable pages map to structured adapter failures and stop processing.
+
+Network observation is the primary and only Phase 1 availability extraction
+strategy. The observer reads a structured response produced naturally by the
+normal page; it never synthesizes the request. Raw responses and opaque values
+remain in memory and are not logged or persisted. Parser and normalizer code is
+browser-independent and tested with sanitized synthetic fixtures.
+
+Before returning slots, normalization verifies that the observed request and
+response represent the requested restaurant, date, and party size. Unknown
+seating labels map conservatively to `other` with sanitized diagnostics. Slot
+ranking remains entirely provider-neutral.
+
+`BookingTarget.restaurant.timeZone` is a validated IANA time zone. An
+authoritative provider timestamp with offset is preferred. When only local time
+offset data is available, the normalizer derives `startsAt` with the IANA zone,
+including DST, and rejects ambiguous or nonexistent local times.
 
 `PreparedBooking.bookingHandle` is an opaque adapter-owned reference to an
 ephemeral prepared or held context. It may be sensitive. It exists only in

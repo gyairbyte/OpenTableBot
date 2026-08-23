@@ -7,5 +7,6 @@ export * from "./domain/target-state.js";
 export * from "./notifications/notifier.js";
 export * from "./opentable/adapter.js";
 export * from "./opentable/errors.js";
+export * from "./opentable/playwright/index.js";
 export * from "./runner/booking-engine.js";
 export * from "./storage/target-store.js";
