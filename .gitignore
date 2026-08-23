@@ -1,0 +1,25 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+.env
+.env.*
+!.env.example
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local application state and sensitive browser/account artifacts
+.local/
+data/
+*.sqlite
+*.sqlite3
+auth.json
+cookies*.json
+session*.json
+browser-profile/
+playwright-report/
+test-results/
