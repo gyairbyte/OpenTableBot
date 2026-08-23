@@ -26,9 +26,14 @@ The `check` script runs linting, TypeScript typechecking, and all Vitest tests.
 
 A booking can proceed only when the exact slot and preview remain inside the
 target's pre-authorized date, time, seating, prepaid, fee, currency, and
-auto-book policy. Authentication failures, challenge pages, access-control
-responses, unexpected terms, strong-customer-authentication prompts, and
-ambiguous responses are designed to pause processing.
+auto-book policy. Unknown prepaid, cancellation, or no-show amounts fail closed
+instead of being interpreted as zero. Authentication failures, challenge pages,
+access-control responses, unexpected terms, strong-customer-authentication
+prompts, and ambiguous responses are designed to pause processing.
+
+Future booking preparation returns an opaque, potentially sensitive in-memory
+handle. It must never be persisted, logged, included in notifications, or
+exposed to users.
 
 This project will not implement CAPTCHA solving, anti-bot or access-control
 evasion, stealth browser techniques, proxy rotation, fingerprint impersonation,

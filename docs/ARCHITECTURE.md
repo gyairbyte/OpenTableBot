@@ -6,9 +6,10 @@
 Booking Target
     -> Scheduler / Runner
     -> Slot Matcher and Ranker
-    -> Policy Validator
-    -> OpenTableAdapter
-    -> Booking
+    -> OpenTableAdapter.prepareBooking
+    -> Policy Validator (PreparedBooking.preview only)
+    -> OpenTableAdapter.book(PreparedBooking)
+    -> Booking Confirmation
 ```
 
 The `BookingTarget` is the user's complete pre-authorization envelope. It
@@ -26,17 +27,26 @@ date, earliest time, target seating preference, then stable slot ID. The runner
 can therefore try a selected slot followed by deterministic fallbacks if the
 first disappears.
 
-The policy validator compares a normalized `BookingPreview` with both the
-selected slot and the target. It fails closed on any mismatch, ambiguity,
-unexpected prepaid requirement, excessive prepaid/fee exposure, currency
-mismatch, unexpected seating, or required 3DS/SCA interaction.
+The policy validator compares the normalized `BookingPreview` inside a
+`PreparedBooking` with both the selected slot and the target. Cancellation and
+no-show terms explicitly distinguish confirmed no fee, a known amount, and an
+unknown amount. Prepaid terms distinguish no requirement, a required known
+amount, and a required unknown amount. Unknown financial terms always fail
+closed; they are never treated as zero.
 
 Only `OpenTableAdapter` may contain OpenTable-specific behavior. It converts
 provider responses into domain types and exposes authentication checking, slot
-discovery, booking preview, and booking. Isolating this implementation prevents
+discovery, booking preparation, and booking. Isolating this implementation prevents
 provider churn from leaking into scheduling, matching, policy, persistence,
 notifications, or state management and lets all core behavior be tested without
 network access.
+
+`PreparedBooking.bookingHandle` is an opaque adapter-owned reference to an
+ephemeral prepared or held context. It may be sensitive. It exists only in
+memory between preparation and submission and must never be interpreted by
+domain code, persisted, logged, placed in a notification, or exposed to a user.
+The optional `expiresAt` supports provider-supplied hold expiry without exposing
+provider-specific token formats or mechanics.
 
 ## State model
 
@@ -71,5 +81,5 @@ rate-limit bypass, and access-control bypass.
 
 `TargetStore` and `Notifier` are ports. A later local implementation can persist
 targets and run history without changing domain code. Sensitive authentication
-material and browser profiles must remain outside domain records, logs, source
-control, and notification payloads.
+material, browser profiles, and prepared booking handles must remain outside
+domain records, logs, source control, and notification payloads.

@@ -3,12 +3,12 @@ import {
   evaluateBookingPreview,
   type PolicyEvaluation,
 } from "../domain/booking-policy.js";
-import type {
-  BookingPreview,
-  ReservationSlot,
-} from "../domain/reservation-slot.js";
+import type { ReservationSlot } from "../domain/reservation-slot.js";
 import { rankAcceptableSlots } from "../domain/slot-matcher.js";
-import type { OpenTableAdapter } from "../opentable/adapter.js";
+import type {
+  OpenTableAdapter,
+  PreparedBooking,
+} from "../opentable/adapter.js";
 import type { Notifier } from "../notifications/notifier.js";
 import type { TargetStore } from "../storage/target-store.js";
 
@@ -32,12 +32,12 @@ export function createBookingPlan(
     : { kind: "candidate", selected, fallbacks };
 }
 
-export function validatePlannedBooking(
+export function validatePreparedBooking(
   target: BookingTarget,
   slot: ReservationSlot,
-  preview: BookingPreview,
+  preparedBooking: PreparedBooking,
 ): PolicyEvaluation {
-  return evaluateBookingPreview(target, slot, preview);
+  return evaluateBookingPreview(target, slot, preparedBooking.preview);
 }
 
 export interface BookingEngineDependencies {

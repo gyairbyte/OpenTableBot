@@ -23,9 +23,11 @@ export const PolicyRejectionReason = {
   PARTY_SIZE_MISMATCH: "PARTY_SIZE_MISMATCH",
   UNEXPECTED_SEATING: "UNEXPECTED_SEATING",
   UNEXPECTED_PREPAID_REQUIREMENT: "UNEXPECTED_PREPAID_REQUIREMENT",
-  PREPAID_AMOUNT_MISSING: "PREPAID_AMOUNT_MISSING",
+  PREPAID_AMOUNT_UNKNOWN: "PREPAID_AMOUNT_UNKNOWN",
   PREPAID_AMOUNT_EXCEEDS_AUTHORIZATION:
     "PREPAID_AMOUNT_EXCEEDS_AUTHORIZATION",
+  CANCELLATION_FEE_UNKNOWN: "CANCELLATION_FEE_UNKNOWN",
+  NO_SHOW_FEE_UNKNOWN: "NO_SHOW_FEE_UNKNOWN",
   CANCELLATION_EXPOSURE_EXCEEDS_AUTHORIZATION:
     "CANCELLATION_EXPOSURE_EXCEEDS_AUTHORIZATION",
   CURRENCY_MISMATCH: "CURRENCY_MISMATCH",
@@ -102,28 +104,35 @@ export function evaluateBookingPreview(
     );
   }
 
-  if (preview.prepaidRequired) {
+  if (preview.prepaid.status !== "not-required") {
     if (!policy.allowPrepaid) {
       reasons.push(PolicyRejectionReason.UNEXPECTED_PREPAID_REQUIREMENT);
     }
-    if (preview.prepaidAmountCents === undefined) {
-      reasons.push(PolicyRejectionReason.PREPAID_AMOUNT_MISSING);
-    } else if (
-      preview.prepaidAmountCents > policy.maxAuthorizedPrepaidCents
-    ) {
+    if (preview.prepaid.status === "required-unknown") {
+      reasons.push(PolicyRejectionReason.PREPAID_AMOUNT_UNKNOWN);
+    } else if (preview.prepaid.amountCents > policy.maxAuthorizedPrepaidCents) {
       reasons.push(
         PolicyRejectionReason.PREPAID_AMOUNT_EXCEEDS_AUTHORIZATION,
       );
     }
   }
 
-  const cancellationExposure = Math.max(
-    preview.cancellationFeeCents ?? 0,
-    preview.noShowFeeCents ?? 0,
+  if (preview.cancellationFee.status === "unknown") {
+    reasons.push(PolicyRejectionReason.CANCELLATION_FEE_UNKNOWN);
+  }
+  if (preview.noShowFee.status === "unknown") {
+    reasons.push(PolicyRejectionReason.NO_SHOW_FEE_UNKNOWN);
+  }
+
+  const financialExposureExceedsAuthorization = [
+    preview.cancellationFee,
+    preview.noShowFee,
+  ].some(
+    (term) =>
+      term.status === "known" &&
+      term.amountCents > policy.maxAuthorizedCancellationNoShowCents,
   );
-  if (
-    cancellationExposure > policy.maxAuthorizedCancellationNoShowCents
-  ) {
+  if (financialExposureExceedsAuthorization) {
     reasons.push(
       PolicyRejectionReason.CANCELLATION_EXPOSURE_EXCEEDS_AUTHORIZATION,
     );

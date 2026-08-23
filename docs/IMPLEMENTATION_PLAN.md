@@ -18,8 +18,10 @@
 
 ## Phase 2: booking preview and dry-run validation
 
-- Normalize exact seating, prepaid, cancellation, no-show, currency, and
-  interaction terms
+- Normalize exact seating, explicit prepaid/cancellation/no-show financial
+  terms, currency, and interaction requirements
+- Return an in-memory `PreparedBooking` whose opaque handle is passed unchanged
+  to booking and is never persisted or logged
 - Exercise the full state flow through `VALIDATING` without submitting a booking
 - Record auditable policy decisions with sensitive-data redaction
 
