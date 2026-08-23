@@ -27,4 +27,27 @@ describe("BookingTarget schema", () => {
 
     expect(result.success).toBe(false);
   });
+
+  it("requires a valid restaurant IANA time zone", () => {
+    expect(
+      BookingTargetSchema.safeParse(
+        makeTarget({
+          restaurant: {
+            ...makeTarget().restaurant,
+            timeZone: "Eastern Time",
+          },
+        }),
+      ).success,
+    ).toBe(false);
+    expect(
+      BookingTargetSchema.safeParse(
+        makeTarget({
+          restaurant: {
+            ...makeTarget().restaurant,
+            timeZone: "America/Los_Angeles",
+          },
+        }),
+      ).success,
+    ).toBe(true);
+  });
 });

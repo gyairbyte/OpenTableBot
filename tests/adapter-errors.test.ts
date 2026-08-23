@@ -11,6 +11,8 @@ describe("adapter failure disposition", () => {
     AdapterFailureCategory.AUTHENTICATION_EXPIRED,
     AdapterFailureCategory.CAPTCHA_OR_CHALLENGE,
     AdapterFailureCategory.ACCESS_CONTROL_RESPONSE,
+    AdapterFailureCategory.INVARIANT_MISMATCH,
+    AdapterFailureCategory.MALFORMED_RESPONSE,
     AdapterFailureCategory.UNEXPECTED_RESPONSE,
     AdapterFailureCategory.UNKNOWN,
   ])("fails closed for %s", (category) => {

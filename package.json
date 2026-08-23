@@ -10,18 +10,28 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "npm run lint && npm run typecheck && npm test",
+    "extension:build": "node extension/build.mjs",
     "lint": "eslint .",
+    "opentable:bridge": "tsx src/opentable/bridge/bridge-cli.ts",
+    "opentable:check-auth": "tsx src/opentable/bridge/cli.ts check-auth",
+    "opentable:slots": "tsx src/opentable/bridge/cli.ts slots",
+    "opentable:status": "tsx src/opentable/bridge/bridge-cli.ts status",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "ws": "^8.21.3",
     "zod": "^4.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
+    "@types/chrome": "^0.2.7",
     "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.2",
     "eslint": "^9.0.0",
+    "tsx": "^4.23.12",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.0.0",
     "vitest": "^3.0.0"

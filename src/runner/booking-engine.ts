@@ -6,7 +6,7 @@ import {
 import type { ReservationSlot } from "../domain/reservation-slot.js";
 import { rankAcceptableSlots } from "../domain/slot-matcher.js";
 import type {
-  OpenTableAdapter,
+  OpenTableBookingAdapter,
   PreparedBooking,
 } from "../opentable/adapter.js";
 import type { Notifier } from "../notifications/notifier.js";
@@ -41,7 +41,7 @@ export function validatePreparedBooking(
 }
 
 export interface BookingEngineDependencies {
-  readonly adapter: OpenTableAdapter;
+  readonly adapter: OpenTableBookingAdapter;
   readonly store: TargetStore;
   readonly notifier: Notifier;
 }

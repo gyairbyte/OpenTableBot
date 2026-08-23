@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { BookingPolicySchema } from "./booking-policy.js";
 import {
+  IanaTimeZoneSchema,
   LocalDateSchema,
   LocalTimeSchema,
   SeatingTypeSchema,
@@ -19,6 +20,7 @@ export const BookingTargetSchema = z
     restaurant: z.object({
       id: z.string().min(1),
       name: z.string().min(1),
+      timeZone: IanaTimeZoneSchema,
     }),
     dateRange: z.object({
       startDate: LocalDateSchema,

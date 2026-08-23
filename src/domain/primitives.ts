@@ -22,6 +22,19 @@ export const LocalTimeSchema = z.string().regex(LOCAL_TIME_PATTERN, {
   message: "Expected a local time in HH:mm 24-hour format",
 });
 
+export function isIanaTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format();
+    return value.includes("/") || value === "UTC";
+  } catch {
+    return false;
+  }
+}
+
+export const IanaTimeZoneSchema = z.string().refine(isIanaTimeZone, {
+  message: "Expected a valid IANA time zone",
+});
+
 export const SeatingTypeSchema = z.enum([
   "standard",
   "outdoor",
