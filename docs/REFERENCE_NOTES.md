@@ -20,6 +20,13 @@ The required attribution and MIT license text are reproduced in
 - License: MIT when reviewed
 - Phase 1B use: high-level availability variable names informed the fixed
   request shape. No booking, lock, submission, stealth, or proxy code was used.
+- Phase 2 revision reviewed: `858530b9c58a4b75d39d9f1c269245f092fab147`.
+  The `/booking/details` SSR path, balanced initial-state extraction pattern,
+  and booking-term field locations informed the read-only preview. The
+  reference tool calls a separate `BookDetails...SlotLock` mutation after the
+  details GET; OpenTableBot intentionally stops before that mutation. No
+  slot-lock, booking-token, saved-card, profile, or make-reservation code was
+  adapted.
 
 ## `nancyychen-bot/mise-en-place`
 

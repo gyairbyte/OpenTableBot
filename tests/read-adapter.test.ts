@@ -3,8 +3,11 @@ import type { AuthenticationStatus, OpenTableReadAdapter } from "../src/opentabl
 import { AdapterFailureCategory, type OpenTableAdapterError } from "../src/opentable/errors.js";
 import type { OpenTableBridgeClientPort } from "../src/opentable/bridge/read-adapter.js";
 import { BrowserBridgeOpenTableReadAdapter } from "../src/opentable/bridge/read-adapter.js";
-import type { FindSlotsResult } from "../src/opentable/bridge/protocol.js";
-import { makeTarget } from "./fixtures.js";
+import type {
+  FindSlotsResult,
+  GetBookingPreviewResult,
+} from "../src/opentable/bridge/protocol.js";
+import { makeSlot, makeTarget } from "./fixtures.js";
 import { makeAvailabilityObservation } from "./opentable-fixtures.js";
 
 function availabilityData(): FindSlotsResult["data"] {
@@ -38,6 +41,33 @@ class FakeBridgeClient implements OpenTableBridgeClientPort {
   }
   async findSlots(): Promise<FindSlotsResult> {
     return this.response;
+  }
+  async getBookingPreview(): Promise<GetBookingPreviewResult> {
+    const slot = makeSlot();
+    return {
+      protocolVersion: 1,
+      id: "preview-response",
+      type: "GET_BOOKING_PREVIEW_RESULT",
+      request: {
+        slotId: slot.id,
+        previewReference: slot.previewReference!,
+        restaurantId: slot.restaurantId,
+        date: slot.localDate,
+        time: slot.localTime,
+        partySize: slot.partySize,
+        seatingType: slot.seatingType,
+        reservationKind: { kind: "standard" },
+      },
+      data: {
+        restaurantId: slot.restaurantId,
+        reservationDateTime: `${slot.localDate}T${slot.localTime}`,
+        partySize: slot.partySize,
+        seatingType: "default",
+        reservationType: "Standard",
+        creditCardRequired: false,
+        currencyCode: "USD",
+      },
+    };
   }
 }
 
@@ -87,5 +117,17 @@ describe("BrowserBridgeOpenTableReadAdapter", () => {
     await expect(adapter.findSlots(makeTarget())).rejects.toMatchObject({
       category: AdapterFailureCategory.AUTHENTICATION_REQUIRED,
     });
+  });
+
+  it("retrieves a read-only preview without implementing prepare or book", async () => {
+    const adapter = new BrowserBridgeOpenTableReadAdapter(new FakeBridgeClient());
+    const preview = await adapter.getBookingPreview(makeTarget(), makeSlot());
+    expect(preview).toMatchObject({
+      slotId: "slot-1",
+      reservationKind: { kind: "standard" },
+      paymentRequirement: "not-required",
+    });
+    expect("prepareBooking" in adapter).toBe(false);
+    expect("book" in adapter).toBe(false);
   });
 });

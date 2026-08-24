@@ -195,7 +195,11 @@ export class OpenTableBridgeServer {
       send(socket, response);
       return;
     }
-    if (message.type !== "AUTH_STATUS" && message.type !== "FIND_SLOTS") {
+    if (
+      message.type !== "AUTH_STATUS" &&
+      message.type !== "FIND_SLOTS" &&
+      message.type !== "GET_BOOKING_PREVIEW"
+    ) {
       send(socket, errorMessage(message.id, "MALFORMED_MESSAGE", "Controller message is not allowed"));
       return;
     }
@@ -243,6 +247,7 @@ export class OpenTableBridgeServer {
     if (
       message.type !== "AUTH_STATUS_RESULT" &&
       message.type !== "FIND_SLOTS_RESULT" &&
+      message.type !== "GET_BOOKING_PREVIEW_RESULT" &&
       message.type !== "ERROR"
     ) {
       send(socket, errorMessage(message.id, "MALFORMED_MESSAGE", "Extension message is not allowed"));

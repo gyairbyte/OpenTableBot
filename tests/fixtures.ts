@@ -23,6 +23,8 @@ export function makeTarget(
       maxAuthorizedPrepaidCents: 10_000,
       maxAuthorizedCancellationNoShowCents: 5_000,
       currency: "USD",
+      allowExperiences: false,
+      allowPaymentMethodRequired: false,
       autoBookAuthorized: true,
     },
     mode: "known-drop",
@@ -42,6 +44,8 @@ export function makeSlot(
     localTime: "19:00",
     partySize: 2,
     seatingType: "standard",
+    previewReference: "00000000-0000-4000-8000-000000000001",
+    reservationKind: { kind: "standard" },
     ...overrides,
   };
 }
@@ -56,11 +60,13 @@ export function makePreview(
     localTime: "19:00",
     partySize: 2,
     seatingType: "standard",
+    reservationKind: { kind: "standard" },
     prepaid: { status: "not-required" },
     cancellationFee: { status: "none" },
     noShowFee: { status: "none" },
-    currency: "USD",
-    requiresStrongCustomerAuthentication: false,
+    currency: { status: "known", code: "USD" },
+    paymentRequirement: "not-required",
+    strongAuthentication: "not-required",
     isAmbiguous: false,
     ...overrides,
   };

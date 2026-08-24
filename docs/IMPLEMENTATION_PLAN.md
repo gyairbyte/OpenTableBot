@@ -14,7 +14,7 @@ launched Chrome received Access Denied before authentication. The Playwright
 implementation correctly failed closed, but it is not retained as a production
 or dependency fallback.
 
-## Phase 1B: paired normal-Chrome read adapter (current)
+## Phase 1B: paired normal-Chrome read adapter (complete)
 
 - User-controlled Chrome and normal OpenTable sign-in
 - Thin MV3 extension with least privilege and deterministic unpacked build
@@ -25,18 +25,30 @@ or dependency fallback.
 - Read/write adapter contracts remain compile-time separated
 - CI remains deterministic and has no live OpenTable dependency
 
-Before Phase 2, complete the manual authenticated read-only smoke test, resolve
-the project license, and choose the long-term local storage/encryption model.
+The manual authenticated Phase 1 read-only smoke test is complete. Project
+licensing and the long-term local storage/encryption model remain owner
+decisions.
 
-## Phase 2: booking preview and dry-run validation (not started)
+## Phase 2: booking preview and dry-run validation (complete)
 
-- Normalize exact seating, financial terms, currency, and interaction needs
-- Add an ephemeral prepared context without submitting a reservation
-- Exercise policy validation and audit redaction only
+- Fetch `/booking/details` as read-only SSR data for an exact observed slot
+- Keep slot hashes and availability tokens in Chrome behind an ephemeral handle
+- Normalize exact seating, Experience type, financial terms, currency, payment
+  requirement, and observable/unknown SCA state
+- Evaluate the existing provider-neutral policy with deterministic reasons
+- Print an explicit dry-run result
+
+Phase 2 does not create a prepared context: OpenTable's actual preparation step
+is a separate slot-lock mutation. That mutation is deliberately deferred.
+
+The authenticated live smoke test completed against one real Standard slot. It
+returned a sanitized booking preview and a deterministic fail-closed policy
+result without navigating to checkout, locking inventory, or creating a
+reservation.
 
 ## Later phases (not started)
 
-- Phase 3: controlled booking behind explicit authorization
+- Phase 3: explicit slot preparation/locking and controlled booking design
 - Phase 4: bounded known-drop scheduling
 - Phase 5: durable cancellation watching
 - Phase 6: notifications and operational hardening

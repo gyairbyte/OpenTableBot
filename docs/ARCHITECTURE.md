@@ -15,6 +15,30 @@ BookingTarget / CLI
     -> ReservationSlot[]
 ```
 
+## Phase 2 read-only booking preview
+
+Each available slot may carry a random, short-lived `previewReference`. The
+reference is not an OpenTable token: it addresses an in-memory record inside
+the page bridge. Slot hashes and availability tokens never leave Chrome.
+
+```text
+BookingTarget + selected ReservationSlot
+    -> GET_BOOKING_PREVIEW (strict bridge request)
+    -> validate previewReference against observed restaurant/date/time/party/
+       seating/Experience
+    -> fixed same-origin GET /booking/details
+    -> parse __INITIAL_STATE__ as JSON without executing its scripts
+    -> in-Chrome allowlist projection
+    -> Node invariant validation and provider-neutral BookingPreview
+    -> deterministic dry-run policy result
+```
+
+The GET is distinct from OpenTable's
+`BookDetailsStandardSlotLock`/`BookDetailsExperienceSlotLock` GraphQL
+mutations. Phase 2 contains neither mutation, no slot-lock hash, no booking
+token, and no make-reservation endpoint. Loading the returned HTML as text also
+means its client scripts cannot run and cannot initiate a lock indirectly.
+
 The user owns and controls the normal Chrome session and performs ordinary
 OpenTable sign-in. Node never launches Chrome, reads a Chrome profile, receives
 cookies, or receives account credentials. The extension is a narrow transport,
@@ -62,16 +86,31 @@ native messaging, downloads, history, identity, or broad website permission.
 
 ## Adapter separation and future flow
 
-`OpenTableReadAdapter` exposes only authentication checking and slot discovery.
-The Phase 1B class implements that interface and has no prepare, lock, book,
-cancel, favorites, or profile method. `OpenTableBookingAdapter` remains a
-separate future interface required by the booking engine; Phase 1B does not
-instantiate or simulate it.
+`OpenTableReadAdapter` exposes authentication checking, slot discovery, and
+read-only `getBookingPreview`. A preview is a `BookingPreview`, not a
+`PreparedBooking`, because no inventory was held. The implementation has no
+prepare, lock, book, cancel, favorites, or profile method.
+`OpenTableBookingAdapter` remains a separate future interface for an explicit
+prepare/lock step and booking submission; Phase 2 does not instantiate or
+simulate it.
 
 The existing provider-neutral policy model remains future-facing: a prepared
 booking would carry an opaque in-memory handle and a normalized preview, with
 unknown financial terms failing closed. No such provider write path exists in
 this phase.
+
+Booking previews explicitly represent Standard, Experience, or unknown
+reservation kinds; known/unknown prepaid, cancellation, and no-show exposure;
+known/unknown currency; payment-method requirement; and required/not-required/
+unknown SCA. Experience and payment-method requirements require separate target
+authorization. All unknown safety-relevant values reject.
+
+Current observed OpenTable terms describe no-show and late-cancellation charges
+as alternative triggers (for example, “no-shows or cancellations … incur” one
+fee). The policy therefore retains the Phase 0 rule of comparing each exposure
+individually with the same cap rather than summing them. If both triggers appear
+without an explicit alternative relationship, normalization leaves both
+unknown instead of assuming they are non-cumulative.
 
 ## Failure and trust boundaries
 

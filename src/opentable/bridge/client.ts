@@ -8,6 +8,7 @@ import {
   type BridgeMessage,
   type ErrorMessage,
   type FindSlotsResult,
+  type GetBookingPreviewResult,
   type Pong,
   bridgeUrl,
   parseBridgeMessage,
@@ -81,6 +82,16 @@ export class OpenTableBridgeClient {
     return result;
   }
 
+  async getBookingPreview(
+    request: GetBookingPreviewResult["request"],
+  ): Promise<GetBookingPreviewResult> {
+    const result = await this.request({ type: "GET_BOOKING_PREVIEW", request });
+    if (result.type !== "GET_BOOKING_PREVIEW_RESULT") {
+      throw new Error("Unexpected bridge response to GET_BOOKING_PREVIEW");
+    }
+    return result;
+  }
+
   private async open(): Promise<void> {
     const socket = new WebSocket(bridgeUrl(this.options.port ?? DEFAULT_BRIDGE_PORT));
     this.socket = socket;
@@ -109,7 +120,11 @@ export class OpenTableBridgeClient {
     body:
       | { readonly type: "PING" }
       | { readonly type: "AUTH_STATUS" }
-      | { readonly type: "FIND_SLOTS"; readonly request: FindSlotsResult["request"] },
+      | { readonly type: "FIND_SLOTS"; readonly request: FindSlotsResult["request"] }
+      | {
+          readonly type: "GET_BOOKING_PREVIEW";
+          readonly request: GetBookingPreviewResult["request"];
+        },
   ): Promise<BridgeMessage> {
     await this.connect();
     return this.requestWithoutConnect(body);
@@ -120,7 +135,11 @@ export class OpenTableBridgeClient {
       | { readonly type: "HELLO"; readonly role: "controller"; readonly credential: string }
       | { readonly type: "PING" }
       | { readonly type: "AUTH_STATUS" }
-      | { readonly type: "FIND_SLOTS"; readonly request: FindSlotsResult["request"] },
+      | { readonly type: "FIND_SLOTS"; readonly request: FindSlotsResult["request"] }
+      | {
+          readonly type: "GET_BOOKING_PREVIEW";
+          readonly request: GetBookingPreviewResult["request"];
+        },
   ): Promise<BridgeMessage> {
     const socket = this.socket;
     if (socket?.readyState !== WebSocket.OPEN) {

@@ -2,10 +2,12 @@
 
 Local-first engineering foundation for a pre-authorized restaurant reservation
 assistant. Phase 1B connects a normal, user-controlled Chrome session to a
-local Node.js process for authenticated, read-only OpenTable availability.
+local Node.js process for authenticated, read-only OpenTable availability and
+booking-term previews.
 
-No booking preparation, slot locking, checkout interaction, account mutation,
-or reservation submission is implemented.
+Phase 2 fetches the server-rendered `/booking/details` document as data and
+normalizes its terms. No booking preparation, slot locking, checkout
+interaction, account mutation, or reservation submission is implemented.
 
 ## Requirements
 
@@ -69,6 +71,28 @@ The command never clicks a time or enters checkout. If restaurant metadata is
 needed for a smoke test, provide the normal OpenTable restaurant URL rather
 than searching provider internals manually.
 
+Preview one selected result and evaluate the target policy with:
+
+```sh
+npm run opentable:preview -- \
+  --restaurant-id 12345 \
+  --restaurant-name "Example Restaurant" \
+  --date 2026-09-01 \
+  --party 2 \
+  --earliest 18:00 \
+  --latest 20:00 \
+  --preferred 19:00 \
+  --timezone America/New_York \
+  --currency USD \
+  --auto-book-authorized false
+```
+
+Optional policy flags include `--allow-prepaid`, `--max-prepaid-cents`,
+`--max-cancellation-no-show-cents`, `--allow-experiences`, and
+`--allow-payment-method-required`. A specific normalized result can be chosen
+with `--slot-id`, `--seating`, or `--experience-id`. The command always prints
+`DRY RUN ONLY` and never locks inventory or creates a reservation.
+
 Stop the bridge with Ctrl+C. Revoke an existing pairing with:
 
 ```sh
@@ -88,10 +112,21 @@ page query or script execution interface.
 
 OpenTable cookies, storage, headers, and account tokens never leave Chrome.
 Before an availability result crosses the extension boundary it is reduced to
-restaurant/day identifiers and non-sensitive slot time/seating fields. Booking
-hashes and availability tokens are discarded. Node revalidates restaurant,
-date, time, party, time zone, and payload shape before returning normalized
-slots.
+restaurant/day identifiers, a short-lived browser-local preview reference, and
+non-sensitive slot time/seating/Experience fields. Booking hashes and
+availability tokens remain in page memory. A preview reference can invoke only
+one fixed same-origin `GET /booking/details`; it cannot invoke either
+`BookDetailsStandardSlotLock` or `BookDetailsExperienceSlotLock`. Node
+revalidates restaurant, date, time, party, seating, reservation kind, time
+zone, and payload shape.
+
+Preview output is an explicit allowlist: restaurant and slot invariants,
+Experience metadata, structured prepaid/cancellation/no-show terms, currency,
+whether a payment method is required, and observable strong-authentication
+state. Saved-card identifiers and details, payment tokens, profile data,
+cookies, headers, page query secrets, and raw provider payloads never cross
+into Node. Unknown money, payment, currency, or SCA facts remain unknown and
+policy evaluation fails closed.
 
 Challenge, access-denied, rate-limited, unauthenticated, malformed, and
 unclassifiable states fail closed. This project will not implement CAPTCHA
