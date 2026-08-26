@@ -24,8 +24,12 @@ export interface PreparedBooking {
   readonly bookingHandle: string;
 
   /** Provider-supplied expiry of the prepared context, when available. */
-  readonly expiresAt?: string;
+  readonly expiresAt: string;
 }
+
+export type BookingSubmissionResult =
+  | { readonly status: "confirmed"; readonly confirmation: BookingConfirmation }
+  | { readonly status: "outcome-unknown"; readonly message: string };
 
 /**
  * The only boundary allowed to know OpenTable request, browser, or response
@@ -46,15 +50,22 @@ export interface OpenTableReadAdapter {
 
 /** Future write-capable adapter. Phase 1 does not implement this interface. */
 export interface OpenTableBookingAdapter extends OpenTableReadAdapter {
+  authorizeBooking(
+    target: BookingTarget,
+    slot: ReservationSlot,
+    approvedPreview: BookingPreview,
+  ): Promise<{ readonly authorizationHandle: string; readonly expiresAt: string }>;
   prepareBooking(
     target: BookingTarget,
     slot: ReservationSlot,
+    approvedPreview: BookingPreview,
+    authorizationHandle: string,
   ): Promise<PreparedBooking>;
   book(
     target: BookingTarget,
     slot: ReservationSlot,
     preparedBooking: PreparedBooking,
-  ): Promise<BookingConfirmation>;
+  ): Promise<BookingSubmissionResult>;
 }
 
 /** Backwards-compatible name for the complete booking-capable contract. */

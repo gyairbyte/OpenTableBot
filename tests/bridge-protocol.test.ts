@@ -6,7 +6,10 @@ import {
   GetBookingPreviewResultSchema,
   OpenTablePageUrlSchema,
   sanitizeOpenTablePageUrl,
+  AuthorizeBookingRequestSchema,
+  SubmitReservationResultSchema,
 } from "../src/opentable/bridge/protocol.js";
+import { makePreview } from "./fixtures.js";
 
 describe("bridge protocol", () => {
   it("rejects unknown fields and unsupported versions", () => {
@@ -83,12 +86,13 @@ describe("bridge protocol", () => {
     expect(GetBookingPreviewResultSchema.safeParse(result).success).toBe(false);
   });
 
-  it("has no lock, prepare, payment, or reservation-submission message", () => {
+  it("allows only the two narrow write capabilities and rejects arbitrary writes", () => {
     for (const type of [
-      "LOCK_SLOT",
       "PREPARE_RESERVATION",
       "MAKE_RESERVATION",
       "SUBMIT_PAYMENT",
+      "FETCH",
+      "EXECUTE_JAVASCRIPT",
       "BOOK",
     ]) {
       expect(
@@ -99,6 +103,64 @@ describe("bridge protocol", () => {
           type,
         }).success,
       ).toBe(false);
+    }
+  });
+
+  it("accepts an exact Standard authorization but rejects provider payload controls", () => {
+    const valid = {
+      protocolVersion: 1,
+      id: "authorize-booking",
+      deadlineEpochMs: Date.now() + 1_000,
+      type: "AUTHORIZE_BOOKING",
+      request: {
+        targetId: "target-1",
+        slotId: "slot-1",
+        previewReference: "00000000-0000-4000-8000-000000000001",
+        restaurantId: "restaurant-123",
+        date: "2026-09-01",
+        time: "19:00",
+        startsAt: "2026-09-01T19:00:00-04:00",
+        partySize: 2,
+        seatingType: "standard",
+        reservationKind: { kind: "standard" },
+        approvedPreview: makePreview(),
+      },
+    };
+    expect(AuthorizeBookingRequestSchema.safeParse(valid).success).toBe(true);
+    for (const injected of [
+      { url: "https://evil.test" },
+      { method: "DELETE" },
+      { body: { slotLockId: "raw-token" } },
+      { javascript: "fetch('/dapi/booking/make-reservation')" },
+    ]) {
+      expect(AuthorizeBookingRequestSchema.safeParse({ ...valid, request: { ...valid.request, ...injected } }).success).toBe(false);
+    }
+  });
+
+  it("allows only a sanitized provider-neutral confirmation", () => {
+    const result = {
+      protocolVersion: 1,
+      id: "submit-result",
+      type: "SUBMIT_RESERVATION_RESULT",
+      result: {
+        status: "confirmed",
+        confirmation: {
+          confirmationId: "ABC123",
+          slotId: "slot-1",
+          restaurantId: "restaurant-123",
+          startsAt: "2026-09-01T19:00:00-04:00",
+          partySize: 2,
+          seatingType: "standard",
+          bookedAt: "2026-08-26T12:00:00.000Z",
+        },
+      },
+    };
+    expect(SubmitReservationResultSchema.safeParse(result).success).toBe(true);
+    for (const secret of ["cookie", "securityToken", "cardNumber", "email"]) {
+      expect(SubmitReservationResultSchema.safeParse({
+        ...result,
+        result: { ...result.result, confirmation: { ...result.result.confirmation, [secret]: "must-not-cross" } },
+      }).success).toBe(false);
     }
   });
 });

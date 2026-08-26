@@ -4,10 +4,12 @@ import { OpenTableBridgeClient, BridgeClientError } from "../src/opentable/bridg
 import { generateCredential } from "../src/opentable/bridge/credential-store.js";
 import {
   BRIDGE_PROTOCOL_VERSION,
+  type BookingIntent,
   type BridgeMessage,
   parseBridgeMessage,
 } from "../src/opentable/bridge/protocol.js";
 import { OpenTableBridgeServer } from "../src/opentable/bridge/server.js";
+import { makePreview } from "./fixtures.js";
 
 const servers: OpenTableBridgeServer[] = [];
 
@@ -80,6 +82,22 @@ function connectReadyExtension(port: number, credential: string): Promise<WebSoc
     });
     socket.once("error", reject);
   });
+}
+
+function bookingIntent(): BookingIntent {
+  return {
+    targetId: "target-1",
+    slotId: "slot-1",
+    previewReference: "00000000-0000-4000-8000-000000000001",
+    restaurantId: "restaurant-123",
+    date: "2026-09-01",
+    time: "19:00",
+    startsAt: "2026-09-01T19:00:00-04:00",
+    partySize: 2,
+    seatingType: "standard",
+    reservationKind: { kind: "standard" },
+    approvedPreview: makePreview(),
+  };
 }
 
 describe("loopback bridge server", () => {
@@ -174,6 +192,66 @@ describe("loopback bridge server", () => {
     const extension = await connectReadyExtension(port, credential);
     const client = new OpenTableBridgeClient({ credential, port, timeoutMs: 50 });
     await expect(client.authenticationStatus()).rejects.toMatchObject({ code: "DEADLINE_EXCEEDED" });
+    client.close();
+    extension.close();
+  });
+
+  it("preserves one lock correlation ID and sanitized progress across the bridge", async () => {
+    const credential = generateCredential();
+    const logs: string[] = [];
+    const telemetry: BridgeMessage[] = [];
+    const server = new OpenTableBridgeServer({
+      credential,
+      port: 0,
+      onStatus: (message) => logs.push(message),
+    });
+    servers.push(server);
+    const port = await server.start();
+    const extension = await connectReadyExtension(port, credential);
+    let extensionRequestId = "";
+    extension.on("message", (raw: RawData) => {
+      const message = parseBridgeMessage(raw.toString());
+      if (message.type !== "LOCK_SLOT") return;
+      extensionRequestId = message.id;
+      extension.send(JSON.stringify({
+        protocolVersion: BRIDGE_PROTOCOL_VERSION,
+        id: message.id,
+        type: "LOCK_PROGRESS",
+        stage: "PROVIDER_DISPATCHED",
+        elapsedMs: 7,
+      }));
+      extension.send(JSON.stringify({
+        protocolVersion: BRIDGE_PROTOCOL_VERSION,
+        id: message.id,
+        type: "LOCK_SLOT_RESULT",
+        outcome: {
+          status: "LOCK_CONFIRMED",
+          operationId: message.id,
+          preparedHandle: "00000000-0000-4000-8000-000000000010",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        },
+      }));
+    });
+    const client = new OpenTableBridgeClient({
+      credential,
+      port,
+      onLockTelemetry: (event) => telemetry.push(event),
+    });
+    const result = await client.lockSlot(
+      "00000000-0000-4000-8000-000000000009",
+      bookingIntent(),
+    );
+    expect(result.id).toBe(extensionRequestId);
+    expect(result.outcome).toMatchObject({
+      status: "LOCK_CONFIRMED",
+      operationId: extensionRequestId,
+    });
+    expect(telemetry.map((event) => event.id)).toEqual([
+      extensionRequestId,
+      extensionRequestId,
+    ]);
+    expect(logs.join("\n")).toContain(`"correlationId":"${extensionRequestId}"`);
+    expect(logs.join("\n")).not.toMatch(/slotHash|cookie|authorization|providerPayload|paymentToken/iu);
     client.close();
     extension.close();
   });

@@ -14,4 +14,5 @@ export * from "./opentable/browser/preview-types.js";
 export * from "./opentable/browser/slot-normalizer.js";
 export * from "./opentable/bridge/index.js";
 export * from "./runner/booking-engine.js";
+export * from "./runner/controlled-booking.js";
 export * from "./storage/target-store.js";

@@ -48,7 +48,7 @@ function datesInRange(startDate: string, endDate: string): string[] {
   return dates;
 }
 
-function mapBridgeError(error: unknown): never {
+export function mapBridgeError(error: unknown): never {
   if (!(error instanceof BridgeClientError)) throw error;
   const category =
     error.code === "OPENTABLE_AUTHENTICATION_REQUIRED"
@@ -58,7 +58,31 @@ function mapBridgeError(error: unknown): never {
         : error.code === "ACCESS_CONTROL_RESPONSE"
           ? AdapterFailureCategory.ACCESS_CONTROL_RESPONSE
           : error.code === "RATE_LIMITED"
-            ? AdapterFailureCategory.RATE_LIMITED
+          ? AdapterFailureCategory.RATE_LIMITED
+          : error.code === "LOCK_REJECTED"
+            ? AdapterFailureCategory.LOCK_REJECTED
+            : error.code === "LOCK_NOT_DISPATCHED"
+              ? AdapterFailureCategory.LOCK_NOT_DISPATCHED
+              : error.code === "LOCK_OUTCOME_UNKNOWN"
+                ? AdapterFailureCategory.LOCK_OUTCOME_UNKNOWN
+                : error.code === "REVALIDATION_OUTCOME_UNKNOWN"
+                  ? AdapterFailureCategory.REVALIDATION_OUTCOME_UNKNOWN
+            : error.code === "LOCK_EXPIRED" || error.code === "BOOKING_AUTHORIZATION_EXPIRED"
+              ? AdapterFailureCategory.LOCK_EXPIRED
+              : error.code === "BOOKING_INVARIANT_MISMATCH"
+                ? AdapterFailureCategory.INVARIANT_MISMATCH
+                : error.code === "TERMS_CHANGED"
+                  ? AdapterFailureCategory.TERMS_CHANGED
+                  : error.code === "PAYMENT_REQUIRED"
+                    ? AdapterFailureCategory.PAYMENT_REQUIRED
+                    : error.code === "SCA_REQUIRED"
+                      ? AdapterFailureCategory.STRONG_AUTHENTICATION_REQUIRED
+                      : error.code === "SUBMISSION_REJECTED"
+                        ? AdapterFailureCategory.SUBMISSION_REJECTED
+                        : error.code === "SUBMISSION_OUTCOME_UNKNOWN"
+                          ? AdapterFailureCategory.SUBMISSION_OUTCOME_UNKNOWN
+                          : error.code === "DUPLICATE_SUBMISSION_PREVENTED"
+                            ? AdapterFailureCategory.DUPLICATE_SUBMISSION_PREVENTED
             : error.code === "EXTENSION_UNAVAILABLE" || error.code === "DEADLINE_EXCEEDED"
       ? AdapterFailureCategory.TRANSIENT_TRANSPORT
       : error.code === "PAGE_NOT_READY"

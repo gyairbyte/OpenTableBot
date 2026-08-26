@@ -10,6 +10,23 @@ import {
 import { makePreview, makeSlot, makeTarget } from "./fixtures.js";
 
 describe("booking preview financial policy", () => {
+  it("accepts unknown currency when every financial exposure is confirmed zero", () => {
+    expect(evaluateBookingPreview(makeTarget(), makeSlot(), makePreview({ currency: { status: "unknown" } }))).toEqual({ allowed: true });
+  });
+
+  it.each([
+    ["prepaid", { prepaid: { status: "required-known", amountCents: 100 } }],
+    ["cancellation", { cancellationFee: { status: "known", amountCents: 100 } }],
+    ["no-show", { noShowFee: { status: "known", amountCents: 100 } }],
+  ] as const)("rejects unknown currency with %s exposure", (_name, override) => {
+    const result = evaluateBookingPreview(
+      makeTarget(),
+      makeSlot(),
+      makePreview({ ...override, currency: { status: "unknown" } }),
+    );
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) expect(result.reasons).toContain(PolicyRejectionReason.CURRENCY_UNKNOWN);
+  });
   it("passes confirmed no cancellation or no-show fee", () => {
     expect(
       evaluateBookingPreview(makeTarget(), makeSlot(), makePreview()),

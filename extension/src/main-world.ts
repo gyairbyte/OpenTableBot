@@ -1,7 +1,27 @@
+import {
+  BrowserPreparedState,
+  confirmedLockDisposition,
+  remainingOperationMs,
+  type LockTelemetryStage,
+} from "../../src/opentable/bridge/lock-lifecycle.js";
+
 const REQUEST_MARKER = "opentablebot:availability-request";
 const RESPONSE_MARKER = "opentablebot:availability-response";
 const PREVIEW_REQUEST_MARKER = "opentablebot:booking-preview-request";
 const PREVIEW_RESPONSE_MARKER = "opentablebot:booking-preview-response";
+const AUTHORIZE_REQUEST_MARKER = "opentablebot:authorize-booking-request";
+const AUTHORIZE_RESPONSE_MARKER = "opentablebot:authorize-booking-response";
+const LOCK_REQUEST_MARKER = "opentablebot:lock-slot-request";
+const LOCK_RESPONSE_MARKER = "opentablebot:lock-slot-response";
+const LOCK_PROGRESS_MARKER = "opentablebot:lock-progress";
+const ABANDON_LOCK_MARKER = "opentablebot:abandon-lock-operation";
+const ABANDON_PREPARED_MARKER = "opentablebot:abandon-prepared-booking";
+const ACK_LOCK_REQUEST_MARKER = "opentablebot:acknowledge-lock-request";
+const ACK_LOCK_RESPONSE_MARKER = "opentablebot:acknowledge-lock-response";
+const REVALIDATE_REQUEST_MARKER = "opentablebot:revalidate-prepared-request";
+const REVALIDATE_RESPONSE_MARKER = "opentablebot:revalidate-prepared-response";
+const SUBMIT_REQUEST_MARKER = "opentablebot:submit-reservation-request";
+const SUBMIT_RESPONSE_MARKER = "opentablebot:submit-reservation-response";
 const APOLLO_OPERATION_NAME = "RestaurantsAvailability";
 const APOLLO_WRAPPED_MARKER = "__opentablebotAvailabilityWrapped";
 const FETCH_WRAPPED_MARKER = "__opentablebotAvailabilityFetchWrapped";
@@ -68,7 +88,53 @@ interface PreviewRecord {
   readonly experienceIds: readonly string[];
   readonly slotHash: string;
   readonly slotAvailabilityToken: string;
+  readonly databaseRegion: string;
+  detailsState?: unknown;
 }
+
+interface WritePageRequest {
+  readonly marker:
+    | typeof AUTHORIZE_REQUEST_MARKER
+    | typeof LOCK_REQUEST_MARKER
+    | typeof ACK_LOCK_REQUEST_MARKER
+    | typeof REVALIDATE_REQUEST_MARKER
+    | typeof SUBMIT_REQUEST_MARKER;
+  readonly id: string;
+  readonly authorizationHandle?: string;
+  readonly preparedHandle?: string;
+  readonly operationId?: string;
+  readonly request: Record<string, unknown>;
+  readonly deadlineEpochMs?: number;
+}
+
+interface AuthorizationRecord {
+  readonly expiresAt: number;
+  readonly intent: Record<string, unknown>;
+  readonly previewReference: string;
+  used: boolean;
+}
+
+export interface PreparedRecord {
+  readonly expiresAt: number;
+  readonly intent: Record<string, unknown>;
+  readonly previewReference: string;
+  readonly slotLockId: string;
+  readonly diningAreaId: number;
+  readonly correlationId: string;
+  readonly lockOperationId: string;
+  state: (typeof BrowserPreparedState)[keyof typeof BrowserPreparedState];
+  terminalResult?: unknown;
+}
+
+interface LockOperationRecord {
+  readonly startedAt: number;
+  latestStage?: LockTelemetryStage;
+  abandoned: boolean;
+}
+
+export type SubmissionStart =
+  | { readonly kind: "begin" }
+  | { readonly kind: "cached"; readonly result: unknown };
 
 interface AvailabilityFetchTemplate {
   readonly url: string;
@@ -81,7 +147,12 @@ interface AvailabilityFetchTemplate {
 
 const availabilityFetchTemplates: AvailabilityFetchTemplate[] = [];
 const previewRecords = new Map<string, PreviewRecord>();
+const authorizationRecords = new Map<string, AuthorizationRecord>();
+const preparedRecords = new Map<string, PreparedRecord>();
+const lockOperationRecords = new Map<string, LockOperationRecord>();
 const PREVIEW_REFERENCE_TTL_MS = 10 * 60_000;
+const AUTHORIZATION_TTL_MS = 30_000;
+const PREPARED_TTL_MS = 60_000;
 let availabilityDocument: unknown;
 let availabilityApolloVariables: Record<string, unknown> | undefined;
 let messageListenerInstalled = false;
@@ -134,6 +205,128 @@ function parseBookingPreviewPageRequest(
     return undefined;
   }
   return value as unknown as BookingPreviewPageRequest;
+}
+
+function parseWritePageRequest(value: unknown): WritePageRequest | undefined {
+  if (!isRecord(value) || typeof value.id !== "string") return undefined;
+  if (
+    value.marker !== AUTHORIZE_REQUEST_MARKER &&
+    value.marker !== LOCK_REQUEST_MARKER &&
+    value.marker !== ACK_LOCK_REQUEST_MARKER &&
+    value.marker !== REVALIDATE_REQUEST_MARKER &&
+    value.marker !== SUBMIT_REQUEST_MARKER
+  ) return undefined;
+  if (value.marker !== ACK_LOCK_REQUEST_MARKER && !isRecord(value.request)) return undefined;
+  if (value.marker === LOCK_REQUEST_MARKER && typeof value.authorizationHandle !== "string") return undefined;
+  if (value.marker === ACK_LOCK_REQUEST_MARKER && (typeof value.operationId !== "string" || typeof value.preparedHandle !== "string")) return undefined;
+  if (value.marker === REVALIDATE_REQUEST_MARKER && typeof value.preparedHandle !== "string") return undefined;
+  if (value.marker === SUBMIT_REQUEST_MARKER && typeof value.preparedHandle !== "string") return undefined;
+  return { ...(value as unknown as WritePageRequest), request: isRecord(value.request) ? value.request : {} };
+}
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function exactIntentMatch(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
+  return canonical(left) === canonical(right);
+}
+
+/** Atomically guards the only transition that may dispatch make-reservation. */
+export function beginPreparedSubmission(
+  prepared: PreparedRecord,
+  intent: Record<string, unknown>,
+  now = Date.now(),
+): SubmissionStart {
+  if (!exactIntentMatch(prepared.intent, intent)) {
+    throw new Error("BOOKING_INVARIANT_MISMATCH: Prepared handle does not match intent");
+  }
+  if (
+    (prepared.state === BrowserPreparedState.CONFIRMED || prepared.state === BrowserPreparedState.OUTCOME_UNKNOWN) &&
+    prepared.terminalResult !== undefined
+  ) return { kind: "cached", result: prepared.terminalResult };
+  if (prepared.state === BrowserPreparedState.FAILED_DEFINITIVE) {
+    throw new Error("SUBMISSION_REJECTED: The prepared booking was definitively rejected");
+  }
+  if (prepared.state !== BrowserPreparedState.REVALIDATED) {
+    throw new Error("DUPLICATE_SUBMISSION_PREVENTED: Reservation submission was already dispatched");
+  }
+  if (prepared.expiresAt <= now) {
+    prepared.state = BrowserPreparedState.FAILED_DEFINITIVE;
+    throw new Error("LOCK_EXPIRED: Prepared slot lock expired before submission");
+  }
+  prepared.state = BrowserPreparedState.SUBMITTING;
+  return { kind: "begin" };
+}
+
+function validateStandardIntent(intent: Record<string, unknown>): { previewReference: string; record: PreviewRecord } {
+  const previewReference = intent.previewReference;
+  const reservationKind = intent.reservationKind;
+  const preview = intent.approvedPreview;
+  if (
+    typeof previewReference !== "string" ||
+    typeof intent.targetId !== "string" ||
+    typeof intent.slotId !== "string" ||
+    typeof intent.restaurantId !== "string" ||
+    typeof intent.date !== "string" ||
+    typeof intent.time !== "string" ||
+    typeof intent.startsAt !== "string" ||
+    typeof intent.partySize !== "number" ||
+    typeof intent.seatingType !== "string" ||
+    !isRecord(reservationKind) || reservationKind.kind !== "standard" ||
+    !isRecord(preview)
+  ) throw new Error("BOOKING_INVARIANT_MISMATCH: Malformed Standard booking intent");
+  cleanExpiredPreviewRecords();
+  const record = previewRecords.get(previewReference);
+  if (record === undefined || record.detailsState === undefined) {
+    throw new Error("BOOKING_AUTHORIZATION_EXPIRED: Preview reference is missing, expired, or was not previewed");
+  }
+  if (
+    record.restaurantId !== intent.restaurantId ||
+    record.date !== intent.date ||
+    record.time !== intent.time ||
+    record.partySize !== intent.partySize ||
+    record.providerType.toLowerCase() !== "standard" ||
+    preview.restaurantId !== intent.restaurantId ||
+    preview.localDate !== intent.date ||
+    preview.localTime !== intent.time ||
+    preview.partySize !== intent.partySize ||
+    preview.seatingType !== intent.seatingType
+  ) throw new Error("BOOKING_INVARIANT_MISMATCH: Intent does not match the previewed slot");
+  const cancellation = preview.cancellationFee;
+  const noShow = preview.noShowFee;
+  if (
+    !isRecord(preview.prepaid) || preview.prepaid.status !== "not-required" ||
+    !isRecord(cancellation) || cancellation.status === "unknown" ||
+    !isRecord(noShow) || noShow.status === "unknown" ||
+    preview.paymentRequirement !== "not-required"
+  ) throw new Error("PAYMENT_REQUIRED: Prepaid, unknown terms, and payment-backed reservations are not supported");
+  const monetaryExposure =
+    (cancellation.status === "known" && Number(cancellation.amountCents) > 0) ||
+    (noShow.status === "known" && Number(noShow.amountCents) > 0);
+  if (monetaryExposure && (!isRecord(preview.currency) || preview.currency.status !== "known")) {
+    throw new Error("PAYMENT_REQUIRED: Currency is required for monetary exposure");
+  }
+  if (preview.strongAuthentication !== "not-required") {
+    throw new Error("SCA_REQUIRED: Interactive strong authentication is not supported");
+  }
+  const rawRoot = rootState(record.detailsState);
+  const rawTimeSlot = isRecord(rawRoot.timeSlot) ? rawRoot.timeSlot : {};
+  if (rawTimeSlot.creditCardRequired !== false) {
+    throw new Error("PAYMENT_REQUIRED: Provider details did not confirm that no payment method is required");
+  }
+  if (rawTimeSlot.strongAuthenticationRequired === true) {
+    throw new Error("SCA_REQUIRED: Provider details require interactive strong authentication");
+  }
+  if (
+    typeof rawTimeSlot.reservationType === "string" &&
+    rawTimeSlot.reservationType.toLowerCase() !== "standard"
+  ) throw new Error("BOOKING_INVARIANT_MISMATCH: Provider details were not a Standard reservation");
+  return { previewReference, record };
 }
 
 export function findAvailabilityOperation(value: unknown): {
@@ -367,6 +560,10 @@ export function attachPreviewReferences(
                 : [],
               slotHash: slot.slotHash,
               slotAvailabilityToken: slot.slotAvailabilityToken,
+              databaseRegion:
+                typeof variables.databaseRegion === "string"
+                  ? variables.databaseRegion
+                  : "NA",
             });
             return { ...slot, previewReference };
           }),
@@ -529,12 +726,381 @@ async function executeBookingPreview(
   ) {
     throw new Error("Booking details redirected away from the read-only details page");
   }
-  return extractInitialStateFromHtml(await response.text());
+  const detailsState = extractInitialStateFromHtml(await response.text());
+  record.detailsState = detailsState;
+  return detailsState;
+}
+
+function rootState(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error("BOOKING_INVARIANT_MISMATCH: Booking details state was malformed");
+  return isRecord(value.state) ? value.state : value;
+}
+
+function diningAreaIdFor(record: PreviewRecord, seatingType: unknown): number {
+  const root = rootState(record.detailsState);
+  const timeSlot = isRecord(root.timeSlot) ? root.timeSlot : {};
+  const expected = providerSeatingType(String(seatingType));
+  const candidates = Array.isArray(timeSlot.diningAreasBySeating)
+    ? timeSlot.diningAreasBySeating.filter(
+        (value): value is Record<string, unknown> =>
+          isRecord(value) &&
+          Number.isInteger(value.diningAreaId) &&
+          compactSeating(String(value.tableCategory ?? "")) === compactSeating(expected ?? ""),
+      )
+    : [];
+  if (candidates.length !== 1) {
+    throw new Error("BOOKING_INVARIANT_MISMATCH: Exact dining area was not established");
+  }
+  return Number(candidates[0]!.diningAreaId);
+}
+
+async function authorizeBooking(request: WritePageRequest): Promise<unknown> {
+  const { previewReference } = validateStandardIntent(request.request);
+  const authorizationHandle = crypto.randomUUID();
+  const expiresAt = Date.now() + AUTHORIZATION_TTL_MS;
+  authorizationRecords.set(authorizationHandle, {
+    expiresAt,
+    intent: structuredClone(request.request),
+    previewReference,
+    used: false,
+  });
+  return { authorizationHandle, expiresAt: new Date(expiresAt).toISOString() };
+}
+
+function emitLockProgress(
+  targetWindow: Window,
+  operationId: string,
+  stage: LockTelemetryStage,
+  outcome?: "LOCK_NOT_DISPATCHED" | "LOCK_REJECTED" | "LOCK_CONFIRMED" | "LOCK_OUTCOME_UNKNOWN",
+): void {
+  const operation = lockOperationRecords.get(operationId);
+  if (operation !== undefined) operation.latestStage = stage;
+  targetWindow.postMessage({
+    marker: LOCK_PROGRESS_MARKER,
+    id: operationId,
+    stage,
+    elapsedMs: Math.max(0, Date.now() - (operation?.startedAt ?? Date.now())),
+    ...(outcome === undefined ? {} : { outcome }),
+  }, targetWindow.location.origin);
+}
+
+function abandonLockOperation(operationId: string): void {
+  const operation = lockOperationRecords.get(operationId);
+  if (operation !== undefined) operation.abandoned = true;
+  for (const prepared of preparedRecords.values()) {
+    if (prepared.lockOperationId === operationId) prepared.state = BrowserPreparedState.ORPHANED;
+  }
+}
+
+function abandonPreparedBooking(preparedHandle: string): void {
+  const prepared = preparedRecords.get(preparedHandle);
+  if (
+    prepared !== undefined &&
+    prepared.state !== BrowserPreparedState.CONFIRMED &&
+    prepared.state !== BrowserPreparedState.FAILED_DEFINITIVE &&
+    prepared.state !== BrowserPreparedState.OUTCOME_UNKNOWN
+  ) prepared.state = BrowserPreparedState.ORPHANED;
+}
+
+async function lockSlot(targetWindow: ApolloWindow, request: WritePageRequest): Promise<unknown> {
+  const operationId = request.id;
+  lockOperationRecords.set(operationId, { startedAt: Date.now(), abandoned: false });
+  emitLockProgress(targetWindow, operationId, "LOCK_REQUEST_ACCEPTED");
+  emitLockProgress(targetWindow, operationId, "PAGE_OPERATION_RECEIVED");
+  const deadlineEpochMs = request.deadlineEpochMs ?? Date.now();
+  if (remainingOperationMs(deadlineEpochMs) === 0) {
+    return { outcome: { status: "LOCK_NOT_DISPATCHED", message: "Lock deadline elapsed before provider dispatch" } };
+  }
+  const handle = request.authorizationHandle!;
+  const authorization = authorizationRecords.get(handle);
+  if (authorization === undefined || authorization.used || authorization.expiresAt <= Date.now()) {
+    throw new Error("BOOKING_AUTHORIZATION_EXPIRED: Booking authorization is invalid, used, or expired");
+  }
+  if (!exactIntentMatch(authorization.intent, request.request)) {
+    throw new Error("BOOKING_INVARIANT_MISMATCH: Lock intent differs from its authorization");
+  }
+  const { previewReference, record } = validateStandardIntent(request.request);
+  authorization.used = true;
+  const diningAreaId = diningAreaIdFor(record, request.request.seatingType);
+  const numericRestaurantId = Number(record.restaurantId);
+  if (!Number.isSafeInteger(numericRestaurantId) || numericRestaurantId <= 0) {
+    throw new Error("BOOKING_INVARIANT_MISMATCH: Provider restaurant ID was not a positive integer");
+  }
+  const url = new URL("/dapi/fe/gql", targetWindow.location.origin);
+  url.searchParams.set("optype", "mutation");
+  url.searchParams.set("opname", "BookDetailsStandardSlotLock");
+  const controller = new AbortController();
+  const abortTimer = targetWindow.setTimeout(
+    () => controller.abort(),
+    remainingOperationMs(deadlineEpochMs),
+  );
+  let response: Response;
+  try {
+    emitLockProgress(targetWindow, operationId, "PROVIDER_DISPATCHED");
+    response = await targetWindow.fetch(url, {
+      method: "POST",
+      credentials: "include",
+      signal: controller.signal,
+      headers: {
+        "content-type": "application/json",
+        "ot-page-type": "network_details",
+        "ot-page-group": "booking",
+      },
+      body: JSON.stringify({
+        operationName: "BookDetailsStandardSlotLock",
+        variables: {
+          input: {
+            restaurantId: numericRestaurantId,
+            seatingOption: "DEFAULT",
+            reservationDateTime: `${record.date}T${record.time}`,
+            partySize: record.partySize,
+            databaseRegion: record.databaseRegion,
+            slotHash: record.slotHash,
+            reservationType: "STANDARD",
+            diningAreaId,
+          },
+        },
+        extensions: {
+          persistedQuery: {
+            version: 1,
+            sha256Hash: "1100bf68905fd7cb1d4fd0f4504a4954aa28ec45fb22913fa977af8b06fd97fa",
+          },
+        },
+      }),
+    });
+  } catch {
+    emitLockProgress(targetWindow, operationId, "PROVIDER_DISPATCHED", "LOCK_OUTCOME_UNKNOWN");
+    return { outcome: { status: "LOCK_OUTCOME_UNKNOWN", message: "Provider lock was dispatched but no definitive response was received" } };
+  } finally {
+    targetWindow.clearTimeout(abortTimer);
+  }
+  emitLockProgress(targetWindow, operationId, "PROVIDER_RESPONSE_RECEIVED");
+  if (!response.ok) {
+    emitLockProgress(targetWindow, operationId, "PROVIDER_RESPONSE_RECEIVED", "LOCK_OUTCOME_UNKNOWN");
+    return { outcome: { status: "LOCK_OUTCOME_UNKNOWN", message: `Provider lock returned HTTP ${response.status} after dispatch without a definitive lock result` } };
+  }
+  let payload: unknown;
+  try {
+    payload = (await response.json()) as unknown;
+  } catch {
+    emitLockProgress(targetWindow, operationId, "PROVIDER_RESPONSE_RECEIVED", "LOCK_OUTCOME_UNKNOWN");
+    return { outcome: { status: "LOCK_OUTCOME_UNKNOWN", message: "Provider lock response could not be parsed" } };
+  }
+  const lockSlotResult = isRecord(payload) && isRecord(payload.data) && isRecord(payload.data.lockSlot)
+    ? payload.data.lockSlot
+    : undefined;
+  const slotLock = lockSlotResult !== undefined && isRecord(lockSlotResult.slotLock)
+    ? lockSlotResult.slotLock
+    : undefined;
+  if (lockSlotResult?.success === false) {
+    emitLockProgress(targetWindow, operationId, "PROVIDER_RESPONSE_RECEIVED", "LOCK_REJECTED");
+    return { outcome: { status: "LOCK_REJECTED", message: "Provider did not confirm the slot lock" } };
+  }
+  if (lockSlotResult?.success !== true || typeof slotLock?.slotLockId !== "string") {
+    emitLockProgress(targetWindow, operationId, "PROVIDER_RESPONSE_RECEIVED", "LOCK_OUTCOME_UNKNOWN");
+    return { outcome: { status: "LOCK_OUTCOME_UNKNOWN", message: "Provider lock response omitted a definitive result" } };
+  }
+  emitLockProgress(targetWindow, operationId, "LOCK_PARSED");
+  const preparedHandle = crypto.randomUUID();
+  const expiresAt = Date.now() + PREPARED_TTL_MS;
+  const operation = lockOperationRecords.get(operationId);
+  const disposition = confirmedLockDisposition(operation?.abandoned === true);
+  preparedRecords.set(preparedHandle, {
+    expiresAt,
+    intent: structuredClone(request.request),
+    previewReference,
+    slotLockId: slotLock.slotLockId,
+    diningAreaId,
+    correlationId: crypto.randomUUID(),
+    lockOperationId: operationId,
+    state: disposition.state,
+  });
+  emitLockProgress(targetWindow, operationId, "PREPARED_STATE_CREATED", disposition.outcome);
+  if (disposition.outcome === "LOCK_OUTCOME_UNKNOWN") {
+    return { outcome: { status: "LOCK_OUTCOME_UNKNOWN", message: "Provider confirmed the lock after its caller abandoned the operation; the lock is orphaned" } };
+  }
+  return {
+    outcome: {
+      status: "LOCK_CONFIRMED",
+      operationId,
+      preparedHandle,
+      expiresAt: new Date(expiresAt).toISOString(),
+    },
+  };
+}
+
+async function acknowledgeLock(request: WritePageRequest): Promise<unknown> {
+  const prepared = preparedRecords.get(request.preparedHandle!);
+  if (
+    prepared === undefined ||
+    prepared.lockOperationId !== request.operationId ||
+    prepared.state !== BrowserPreparedState.PENDING_ACK ||
+    prepared.expiresAt <= Date.now()
+  ) throw new Error("LOCK_OUTCOME_UNKNOWN: Prepared lock cannot be acknowledged safely");
+  prepared.state = BrowserPreparedState.ACKNOWLEDGED;
+  return { acknowledged: true };
+}
+
+async function revalidatePreparedBooking(
+  targetWindow: ApolloWindow,
+  request: WritePageRequest,
+): Promise<unknown> {
+  const prepared = preparedRecords.get(request.preparedHandle!);
+  if (
+    prepared === undefined ||
+    prepared.state !== BrowserPreparedState.ACKNOWLEDGED ||
+    prepared.expiresAt <= Date.now() ||
+    !exactIntentMatch(prepared.intent, request.request)
+  ) throw new Error("REVALIDATION_OUTCOME_UNKNOWN: Prepared lock is unavailable for revalidation");
+  const previewRequest: BookingPreviewPageRequest = {
+    marker: PREVIEW_REQUEST_MARKER,
+    id: request.id,
+    request: {
+      previewReference: prepared.previewReference,
+      restaurantId: String(request.request.restaurantId),
+      date: String(request.request.date),
+      time: String(request.request.time),
+      partySize: Number(request.request.partySize),
+      seatingType: String(request.request.seatingType),
+      reservationKind: { kind: "standard" },
+    },
+  };
+  try {
+    const postLockState = await executeBookingPreview(targetWindow, previewRequest);
+    if (prepared.state !== BrowserPreparedState.ACKNOWLEDGED) {
+      throw new Error("REVALIDATION_OUTCOME_UNKNOWN: Prepared lock was orphaned before revalidation completed");
+    }
+    prepared.state = BrowserPreparedState.REVALIDATED;
+    return { postLockState };
+  } catch (error) {
+    prepared.state = BrowserPreparedState.ORPHANED;
+    throw error;
+  }
+}
+
+function profileFromState(value: unknown): Record<string, string> {
+  const root = rootState(value);
+  const header = isRecord(root.header) ? root.header : {};
+  const profile = isRecord(header.userProfile) ? header.userProfile : {};
+  const phone = isRecord(profile.mobilePhoneNumber) ? profile.mobilePhoneNumber : {};
+  const stringField = (field: unknown): string | undefined =>
+    typeof field === "string" && field.trim() !== "" ? field.trim() : undefined;
+  const identifierField = (field: unknown): string | undefined =>
+    (typeof field === "string" || typeof field === "number") && String(field).trim() !== ""
+      ? String(field).trim()
+      : undefined;
+  const fields = {
+    firstName: stringField(profile.firstName),
+    lastName: stringField(profile.lastName),
+    email: stringField(profile.email),
+    phoneNumber: stringField(phone.number),
+    phoneNumberCountryId: identifierField(phone.countryId),
+    country: identifierField(profile.countryId),
+  };
+  if (Object.values(fields).some((field) => field === undefined)) {
+    throw new Error("SUBMISSION_REJECTED: Signed-in profile is incomplete");
+  }
+  return fields as Record<string, string>;
+}
+
+async function submitReservation(targetWindow: ApolloWindow, request: WritePageRequest): Promise<unknown> {
+  const prepared = preparedRecords.get(request.preparedHandle!);
+  if (prepared === undefined || !exactIntentMatch(prepared.intent, request.request)) {
+    throw new Error("BOOKING_INVARIANT_MISMATCH: Prepared handle is invalid or does not match intent");
+  }
+  const start = beginPreparedSubmission(prepared, request.request);
+  if (start.kind === "cached") return start.result;
+  const { record } = validateStandardIntent(request.request);
+  let dispatched = false;
+  try {
+    const dashboard = await targetWindow.fetch(new URL("/user/dining-dashboard", targetWindow.location.origin), {
+      method: "GET", credentials: "include", redirect: "follow",
+    });
+    if (!dashboard.ok) throw new Error(`SUBMISSION_REJECTED: Profile returned HTTP ${dashboard.status}`);
+    const profile = profileFromState(extractInitialStateFromHtml(await dashboard.text()));
+    dispatched = true;
+    const response = await targetWindow.fetch(new URL("/dapi/booking/make-reservation", targetWindow.location.origin), {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json", "ot-page-type": "network_details", "ot-page-group": "booking" },
+      body: JSON.stringify({
+        restaurantId: Number(record.restaurantId),
+        reservationDateTime: `${record.date}T${record.time}`,
+        partySize: record.partySize,
+        slotHash: record.slotHash,
+        slotAvailabilityToken: record.slotAvailabilityToken,
+        slotLockId: prepared.slotLockId,
+        diningAreaId: prepared.diningAreaId,
+        ...profile,
+        reservationAttribute: "default",
+        pointsType: "Standard",
+        points: 100,
+        tipAmount: 0,
+        tipPercent: 0,
+        confirmPoints: true,
+        optInEmailRestaurant: false,
+        additionalServiceFees: [],
+        nonBookableExperiences: [],
+        katakanaFirstName: "",
+        katakanaLastName: "",
+        correlationId: prepared.correlationId,
+        isModify: false,
+        reservationType: "Standard",
+      }),
+    });
+    if (response.status >= 500) throw new Error(`Provider returned HTTP ${response.status} after dispatch`);
+    const payload = (await response.json()) as unknown;
+    if (!response.ok || !isRecord(payload) || payload.success !== true) {
+      prepared.state = BrowserPreparedState.FAILED_DEFINITIVE;
+      prepared.terminalResult = { definitiveFailure: true, message: "Provider definitively rejected the reservation" };
+      throw new Error("SUBMISSION_REJECTED: Provider definitively rejected the reservation");
+    }
+    if (payload.partnerScaRequired === true || typeof payload.redirect === "string") {
+      prepared.state = BrowserPreparedState.OUTCOME_UNKNOWN;
+      prepared.terminalResult = { status: "outcome-unknown", message: "Provider requested an unsupported interactive authentication step after dispatch" };
+      return prepared.terminalResult;
+    }
+    const confirmationId = typeof payload.confirmationNumber === "string" || typeof payload.confirmationNumber === "number"
+      ? String(payload.confirmationNumber)
+      : typeof payload.reservationId === "string" || typeof payload.reservationId === "number"
+        ? String(payload.reservationId)
+        : undefined;
+    if (confirmationId === undefined) throw new Error("Provider omitted a confirmation after dispatch");
+    prepared.state = BrowserPreparedState.CONFIRMED;
+    prepared.terminalResult = {
+      status: "confirmed",
+      confirmation: {
+        confirmationId,
+        slotId: String(request.request.slotId),
+        restaurantId: String(request.request.restaurantId),
+        startsAt: String(request.request.startsAt),
+        partySize: Number(request.request.partySize),
+        seatingType: String(request.request.seatingType),
+        bookedAt: new Date().toISOString(),
+      },
+    };
+    return prepared.terminalResult;
+  } catch (error) {
+    if (!dispatched || (error instanceof Error && error.message.startsWith("SUBMISSION_REJECTED:"))) throw error;
+    prepared.state = BrowserPreparedState.OUTCOME_UNKNOWN;
+    prepared.terminalResult = {
+      status: "outcome-unknown",
+      message: "Reservation submission was dispatched, but its outcome could not be confirmed; do not retry",
+    };
+    return prepared.terminalResult;
+  }
 }
 
 function respond(
   targetWindow: Window,
-  marker: typeof RESPONSE_MARKER | typeof PREVIEW_RESPONSE_MARKER,
+  marker:
+    | typeof RESPONSE_MARKER
+    | typeof PREVIEW_RESPONSE_MARKER
+    | typeof AUTHORIZE_RESPONSE_MARKER
+    | typeof LOCK_RESPONSE_MARKER
+    | typeof ACK_LOCK_RESPONSE_MARKER
+    | typeof REVALIDATE_RESPONSE_MARKER
+    | typeof SUBMIT_RESPONSE_MARKER,
   id: string,
   result: { readonly ok: true; readonly result: unknown } | { readonly ok: false; readonly error: string },
 ): void {
@@ -549,6 +1115,50 @@ function installMessageListener(targetWindow: ApolloWindow): void {
   messageListenerInstalled = true;
   targetWindow.addEventListener("message", (event: MessageEvent<unknown>) => {
     if (event.source !== targetWindow) return;
+    if (isRecord(event.data) && event.data.marker === ABANDON_LOCK_MARKER && typeof event.data.id === "string") {
+      abandonLockOperation(event.data.id);
+      return;
+    }
+    if (
+      isRecord(event.data) &&
+      event.data.marker === ABANDON_PREPARED_MARKER &&
+      typeof event.data.preparedHandle === "string"
+    ) {
+      abandonPreparedBooking(event.data.preparedHandle);
+      return;
+    }
+    const writeRequest = parseWritePageRequest(event.data);
+    if (writeRequest !== undefined) {
+      const responseMarker =
+        writeRequest.marker === AUTHORIZE_REQUEST_MARKER
+          ? AUTHORIZE_RESPONSE_MARKER
+          : writeRequest.marker === LOCK_REQUEST_MARKER
+            ? LOCK_RESPONSE_MARKER
+            : writeRequest.marker === ACK_LOCK_REQUEST_MARKER
+              ? ACK_LOCK_RESPONSE_MARKER
+              : writeRequest.marker === REVALIDATE_REQUEST_MARKER
+                ? REVALIDATE_RESPONSE_MARKER
+                : SUBMIT_RESPONSE_MARKER;
+      const operation =
+        writeRequest.marker === AUTHORIZE_REQUEST_MARKER
+          ? authorizeBooking(writeRequest)
+          : writeRequest.marker === LOCK_REQUEST_MARKER
+            ? lockSlot(targetWindow, writeRequest)
+            : writeRequest.marker === ACK_LOCK_REQUEST_MARKER
+              ? acknowledgeLock(writeRequest)
+              : writeRequest.marker === REVALIDATE_REQUEST_MARKER
+                ? revalidatePreparedBooking(targetWindow, writeRequest)
+                : submitReservation(targetWindow, writeRequest);
+      void operation
+        .then((result) => respond(targetWindow, responseMarker, writeRequest.id, { ok: true, result }))
+        .catch((error: unknown) =>
+          respond(targetWindow, responseMarker, writeRequest.id, {
+            ok: false,
+            error: error instanceof Error ? error.message.slice(0, 300) : "Controlled booking operation failed",
+          }),
+        );
+      return;
+    }
     const previewRequest = parseBookingPreviewPageRequest(event.data);
     if (previewRequest !== undefined) {
       void executeBookingPreview(targetWindow, previewRequest)

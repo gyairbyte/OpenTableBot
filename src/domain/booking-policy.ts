@@ -120,9 +120,14 @@ export function evaluateBookingPreview(
   if (preview.reservationKind.kind === "unknown") {
     reasons.push(PolicyRejectionReason.UNKNOWN_RESERVATION_KIND);
   }
-  if (preview.currency.status === "unknown") {
+  const hasMonetaryExposure =
+    preview.prepaid.status !== "not-required" ||
+    preview.cancellationFee.status !== "none" ||
+    preview.noShowFee.status !== "none" ||
+    preview.paymentRequirement !== "not-required";
+  if (preview.currency.status === "unknown" && hasMonetaryExposure) {
     reasons.push(PolicyRejectionReason.CURRENCY_UNKNOWN);
-  } else if (preview.currency.code !== policy.currency) {
+  } else if (preview.currency.status === "known" && preview.currency.code !== policy.currency) {
     reasons.push(PolicyRejectionReason.CURRENCY_MISMATCH);
   }
   if (preview.paymentRequirement === "unknown") {

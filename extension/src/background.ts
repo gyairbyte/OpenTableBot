@@ -4,6 +4,13 @@ import {
   DEFAULT_REQUEST_TIMEOUT_MS,
   FindSlotsRequestSchema,
   BookingPreviewRequestPayloadSchema,
+  BookingIntentSchema,
+  AuthorizeBookingResultSchema,
+  LockSlotResultSchema,
+  SubmitReservationResultSchema,
+  AcknowledgeLockResultSchema,
+  RevalidatePreparedBookingResultSchema,
+  LockProgressSchema,
   OpenTablePageUrlSchema,
   PairingCodeSchema,
   bridgeUrl,
@@ -13,6 +20,11 @@ import {
   type BridgeMessage,
   type FindSlotsRequest,
   type GetBookingPreviewRequest,
+  type AuthorizeBookingRequest,
+  type LockSlotRequest,
+  type SubmitReservationRequest,
+  type AcknowledgeLockRequest,
+  type RevalidatePreparedBookingRequest,
 } from "../../src/opentable/bridge/protocol.js";
 import { SafeAvailabilityDataSchema } from "../../src/opentable/browser/availability-types.js";
 import { SafeBookingPreviewDataSchema } from "../../src/opentable/browser/preview-types.js";
@@ -39,6 +51,7 @@ const state: ExtensionState = {
   reconnectTimer: undefined,
   heartbeatTimer: undefined,
 };
+const activeLockOperationIds = new Map<string, number>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -57,7 +70,21 @@ function extensionError(
     | "OPENTABLE_AUTHENTICATION_REQUIRED"
     | "PAGE_CHALLENGE"
     | "ACCESS_CONTROL_RESPONSE"
-    | "RATE_LIMITED",
+    | "RATE_LIMITED"
+    | "BOOKING_AUTHORIZATION_INVALID"
+    | "BOOKING_AUTHORIZATION_EXPIRED"
+    | "BOOKING_INVARIANT_MISMATCH"
+    | "LOCK_REJECTED"
+    | "LOCK_NOT_DISPATCHED"
+    | "LOCK_OUTCOME_UNKNOWN"
+    | "LOCK_EXPIRED"
+    | "REVALIDATION_OUTCOME_UNKNOWN"
+    | "TERMS_CHANGED"
+    | "PAYMENT_REQUIRED"
+    | "SCA_REQUIRED"
+    | "SUBMISSION_REJECTED"
+    | "SUBMISSION_OUTCOME_UNKNOWN"
+    | "DUPLICATE_SUBMISSION_PREVENTED",
   message: string,
 ): void {
   send({ protocolVersion: BRIDGE_PROTOCOL_VERSION, id, type: "ERROR", code, message: message.slice(0, 500) });
@@ -74,6 +101,36 @@ function pageFailureCode(pageKind: unknown):
   if (pageKind === OpenTablePageKind.ACCESS_DENIED) return "ACCESS_CONTROL_RESPONSE";
   if (pageKind === OpenTablePageKind.RATE_LIMITED) return "RATE_LIMITED";
   return "PAGE_OPERATION_UNAVAILABLE";
+}
+
+function controlledFailureCode(error: string):
+  | "BOOKING_AUTHORIZATION_INVALID"
+  | "BOOKING_AUTHORIZATION_EXPIRED"
+  | "BOOKING_INVARIANT_MISMATCH"
+  | "LOCK_REJECTED"
+  | "LOCK_NOT_DISPATCHED"
+  | "LOCK_OUTCOME_UNKNOWN"
+  | "LOCK_EXPIRED"
+  | "REVALIDATION_OUTCOME_UNKNOWN"
+  | "TERMS_CHANGED"
+  | "PAYMENT_REQUIRED"
+  | "SCA_REQUIRED"
+  | "SUBMISSION_REJECTED"
+  | "SUBMISSION_OUTCOME_UNKNOWN"
+  | "DUPLICATE_SUBMISSION_PREVENTED"
+  | "PAGE_OPERATION_UNAVAILABLE" {
+  const prefix = error.split(":", 1)[0];
+  const allowed = new Set([
+    "BOOKING_AUTHORIZATION_INVALID", "BOOKING_AUTHORIZATION_EXPIRED",
+    "BOOKING_INVARIANT_MISMATCH", "LOCK_REJECTED", "LOCK_NOT_DISPATCHED",
+    "LOCK_OUTCOME_UNKNOWN", "LOCK_EXPIRED", "REVALIDATION_OUTCOME_UNKNOWN",
+    "TERMS_CHANGED", "PAYMENT_REQUIRED", "SCA_REQUIRED",
+    "SUBMISSION_REJECTED", "SUBMISSION_OUTCOME_UNKNOWN",
+    "DUPLICATE_SUBMISSION_PREVENTED",
+  ]);
+  return allowed.has(prefix ?? "")
+    ? prefix as Exclude<ReturnType<typeof controlledFailureCode>, "PAGE_OPERATION_UNAVAILABLE">
+    : "PAGE_OPERATION_UNAVAILABLE";
 }
 
 function startHeartbeat(): void {
@@ -220,6 +277,93 @@ async function forwardBookingPreview(
   }
 }
 
+async function forwardControlledWrite(
+  message:
+    | AuthorizeBookingRequest
+    | LockSlotRequest
+    | AcknowledgeLockRequest
+    | RevalidatePreparedBookingRequest
+    | SubmitReservationRequest,
+): Promise<void> {
+  const tabId = state.activeTabId;
+  if (tabId === undefined) {
+    extensionError(message.id, "PAGE_NOT_READY", "No eligible OpenTable page is available");
+    return;
+  }
+  if (Date.now() >= message.deadlineEpochMs) {
+    const code = message.type === "LOCK_SLOT" ? "LOCK_NOT_DISPATCHED" : "DEADLINE_EXCEEDED";
+    extensionError(message.id, code, `${code}: controlled booking request deadline elapsed`);
+    return;
+  }
+  if (message.type === "LOCK_SLOT") {
+    activeLockOperationIds.set(message.id, Date.now());
+    send({
+      protocolVersion: BRIDGE_PROTOCOL_VERSION,
+      id: message.id,
+      type: "LOCK_PROGRESS",
+      stage: "LOCK_REQUEST_ACCEPTED",
+      elapsedMs: 0,
+    });
+  }
+  try {
+    const internal = message.type === "AUTHORIZE_BOOKING"
+      ? { type: "OTB_AUTHORIZE_BOOKING", request: message.request, deadlineEpochMs: message.deadlineEpochMs }
+      : message.type === "LOCK_SLOT"
+        ? { type: "OTB_LOCK_SLOT", operationId: message.id, deadlineEpochMs: message.deadlineEpochMs, authorizationHandle: message.authorizationHandle, request: message.request }
+        : message.type === "ACKNOWLEDGE_LOCK"
+          ? { type: "OTB_ACKNOWLEDGE_LOCK", operationId: message.operationId, preparedHandle: message.preparedHandle, deadlineEpochMs: message.deadlineEpochMs }
+          : message.type === "REVALIDATE_PREPARED_BOOKING"
+            ? { type: "OTB_REVALIDATE_PREPARED_BOOKING", preparedHandle: message.preparedHandle, request: message.request, deadlineEpochMs: message.deadlineEpochMs }
+            : { type: "OTB_SUBMIT_RESERVATION", preparedHandle: message.preparedHandle, request: message.request, deadlineEpochMs: message.deadlineEpochMs };
+    const response: unknown = await chrome.tabs.sendMessage(tabId, internal);
+    if (!isRecord(response) || response.ok !== true) {
+      const detail = isRecord(response) && typeof response.error === "string"
+        ? response.error
+        : "Controlled booking operation failed";
+      extensionError(message.id, controlledFailureCode(detail), detail);
+      return;
+    }
+    if (message.type === "AUTHORIZE_BOOKING") {
+      const data = AuthorizeBookingResultSchema.omit({ protocolVersion: true, id: true, type: true }).parse(response.data);
+      send({ protocolVersion: BRIDGE_PROTOCOL_VERSION, id: message.id, type: "AUTHORIZE_BOOKING_RESULT", ...data });
+    } else if (message.type === "LOCK_SLOT") {
+      const data = LockSlotResultSchema.omit({ protocolVersion: true, id: true, type: true }).parse(response.data);
+      send({
+        protocolVersion: BRIDGE_PROTOCOL_VERSION,
+        id: message.id,
+        type: "LOCK_PROGRESS",
+        stage: "RESPONSE_SENT_TO_NODE",
+        elapsedMs: Math.max(0, Date.now() - (activeLockOperationIds.get(message.id) ?? Date.now())),
+        outcome: data.outcome.status,
+      });
+      send({ protocolVersion: BRIDGE_PROTOCOL_VERSION, id: message.id, type: "LOCK_SLOT_RESULT", ...data });
+    } else if (message.type === "ACKNOWLEDGE_LOCK") {
+      const data = AcknowledgeLockResultSchema.omit({ protocolVersion: true, id: true, type: true }).parse(response.data);
+      send({ protocolVersion: BRIDGE_PROTOCOL_VERSION, id: message.id, type: "ACKNOWLEDGE_LOCK_RESULT", ...data });
+    } else if (message.type === "REVALIDATE_PREPARED_BOOKING") {
+      const data = RevalidatePreparedBookingResultSchema.omit({ protocolVersion: true, id: true, type: true }).parse(response.data);
+      if (JSON.stringify(data.request) !== JSON.stringify(BookingIntentSchema.parse(message.request))) {
+        throw new Error("BOOKING_INVARIANT_MISMATCH: Revalidation result intent changed");
+      }
+      send({ protocolVersion: BRIDGE_PROTOCOL_VERSION, id: message.id, type: "REVALIDATE_PREPARED_BOOKING_RESULT", ...data });
+    } else {
+      const result = SubmitReservationResultSchema.shape.result.parse(response.data);
+      send({ protocolVersion: BRIDGE_PROTOCOL_VERSION, id: message.id, type: "SUBMIT_RESERVATION_RESULT", result });
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "Controlled booking operation failed";
+    extensionError(message.id, controlledFailureCode(detail), detail);
+  } finally {
+    if (message.type === "LOCK_SLOT") activeLockOperationIds.delete(message.id);
+  }
+}
+
+async function abandonLockOperation(operationId: string): Promise<void> {
+  const tabId = state.activeTabId;
+  if (tabId === undefined) return;
+  await chrome.tabs.sendMessage(tabId, { type: "OTB_ABANDON_LOCK_OPERATION", operationId }).catch(() => undefined);
+}
+
 function handleBridgeMessage(raw: string): void {
   let message: BridgeMessage;
   try {
@@ -237,6 +381,17 @@ function handleBridgeMessage(raw: string): void {
   if (message.type === "AUTH_STATUS") void forwardAuthentication(message);
   if (message.type === "FIND_SLOTS") void forwardFindSlots(message);
   if (message.type === "GET_BOOKING_PREVIEW") void forwardBookingPreview(message);
+  if (message.type === "ABANDON_LOCK_OPERATION") {
+    void abandonLockOperation(message.id);
+    return;
+  }
+  if (
+    message.type === "AUTHORIZE_BOOKING" ||
+    message.type === "LOCK_SLOT" ||
+    message.type === "ACKNOWLEDGE_LOCK" ||
+    message.type === "REVALIDATE_PREPARED_BOOKING" ||
+    message.type === "SUBMIT_RESERVATION"
+  ) void forwardControlledWrite(message);
 }
 
 function scheduleReconnect(): void {
@@ -272,6 +427,8 @@ export function connect(): void {
     state.authenticated = false;
     if (state.heartbeatTimer !== undefined) self.clearInterval(state.heartbeatTimer);
     state.heartbeatTimer = undefined;
+    for (const operationId of activeLockOperationIds.keys()) void abandonLockOperation(operationId);
+    activeLockOperationIds.clear();
     scheduleReconnect();
   });
   socket.addEventListener("error", () => socket.close());
@@ -335,6 +492,11 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage !== undefined) {
         state.activePageUrl = sanitizeOpenTablePageUrl(message.pageUrl);
         announceReady();
       }
+      return false;
+    }
+    if (message.type === "OTB_LOCK_PROGRESS" && sender.tab?.id === state.activeTabId) {
+      const progress = LockProgressSchema.safeParse(message.progress);
+      if (progress.success) send(progress.data);
       return false;
     }
     if (message.type === "OTB_GET_STATUS") {

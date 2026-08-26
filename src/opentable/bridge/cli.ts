@@ -7,6 +7,9 @@ import { OpenTableAdapterError } from "../errors.js";
 import { OpenTableBridgeClient } from "./client.js";
 import { loadCredential } from "./credential-store.js";
 import { BrowserBridgeOpenTableReadAdapter } from "./read-adapter.js";
+import type { OpenTableReadAdapter } from "../adapter.js";
+import { BrowserBridgeOpenTableBookingAdapter } from "./booking-adapter.js";
+import { runControlledBooking } from "../../runner/controlled-booking.js";
 
 const allSeatingTypes: readonly SeatingType[] = [
   "standard",
@@ -20,15 +23,42 @@ const allSeatingTypes: readonly SeatingType[] = [
 
 function parseFlags(args: readonly string[]): ReadonlyMap<string, string> {
   const flags = new Map<string, string>();
-  for (let index = 0; index < args.length; index += 2) {
+  for (let index = 0; index < args.length;) {
     const key = args[index];
     const value = args[index + 1];
-    if (key === undefined || !key.startsWith("--") || value === undefined) {
+    if (key === "--execute") {
+      flags.set("execute", "true");
+      index += 1;
+      continue;
+    }
+    if (key === undefined || !key.startsWith("--") || value === undefined || value.startsWith("--")) {
       throw new Error(`Expected --name value arguments; received ${key ?? "end of input"}`);
     }
     flags.set(key.slice(2), value);
+    index += 2;
   }
   return flags;
+}
+
+async function selectedSlot(
+  adapter: OpenTableReadAdapter,
+  target: BookingTarget,
+  flags: ReadonlyMap<string, string>,
+) {
+  const slots = rankAcceptableSlots(target, await adapter.findSlots(target));
+  const requestedSlotId = flags.get("slot-id");
+  const requestedSeating = flags.get("seating");
+  const requestedExperienceId = flags.get("experience-id");
+  const slot = slots.find(
+    (candidate) =>
+      (requestedSlotId === undefined || candidate.id === requestedSlotId) &&
+      (requestedSeating === undefined || candidate.seatingType === requestedSeating) &&
+      (requestedExperienceId === undefined ||
+        (candidate.reservationKind.kind === "experience" &&
+          candidate.reservationKind.experienceId === requestedExperienceId)),
+  );
+  if (slot === undefined) throw new Error("No available slot matched the selection");
+  return slot;
 }
 
 function requiredFlag(flags: ReadonlyMap<string, string>, name: string): string {
@@ -86,7 +116,7 @@ function targetFromFlags(flags: ReadonlyMap<string, string>): BookingTarget {
 }
 
 async function runSlots(
-  adapter: BrowserBridgeOpenTableReadAdapter,
+  adapter: OpenTableReadAdapter,
   flags: ReadonlyMap<string, string>,
 ): Promise<void> {
   const target = targetFromFlags(flags);
@@ -113,25 +143,11 @@ async function runSlots(
 }
 
 async function runPreview(
-  adapter: BrowserBridgeOpenTableReadAdapter,
+  adapter: OpenTableReadAdapter,
   flags: ReadonlyMap<string, string>,
 ): Promise<void> {
   const target = targetFromFlags(flags);
-  const slots = rankAcceptableSlots(target, await adapter.findSlots(target));
-  const requestedSlotId = flags.get("slot-id");
-  const requestedSeating = flags.get("seating");
-  const requestedExperienceId = flags.get("experience-id");
-  const slot = slots.find(
-    (candidate) =>
-      (requestedSlotId === undefined || candidate.id === requestedSlotId) &&
-      (requestedSeating === undefined || candidate.seatingType === requestedSeating) &&
-      (requestedExperienceId === undefined ||
-        (candidate.reservationKind.kind === "experience" &&
-          candidate.reservationKind.experienceId === requestedExperienceId)),
-  );
-  if (slot === undefined) {
-    throw new Error("No available slot matched the preview selection");
-  }
+  const slot = await selectedSlot(adapter, target, flags);
   const preview = await adapter.getBookingPreview(target, slot);
   const policy = validateBookingPreview(target, slot, preview);
   console.log(
@@ -169,23 +185,54 @@ async function runPreview(
   );
 }
 
+async function runBook(
+  adapter: BrowserBridgeOpenTableBookingAdapter,
+  flags: ReadonlyMap<string, string>,
+): Promise<void> {
+  const target = targetFromFlags(flags);
+  const slot = await selectedSlot(adapter, target, flags);
+  const execute = flags.get("execute") === "true";
+  console.log(JSON.stringify({
+    exactSelection: {
+      restaurant: target.restaurant,
+      date: slot.localDate,
+      time: slot.localTime,
+      startsAt: slot.startsAt,
+      party: slot.partySize,
+      seating: slot.seatingType,
+      reservationKind: slot.reservationKind,
+      slotId: slot.id,
+    },
+    mode: execute ? "CONTROLLED_WRITE" : "DRY_RUN",
+  }, null, 2));
+  const result = await runControlledBooking(adapter, target, slot, { execute });
+  console.log(JSON.stringify(result, null, 2));
+  if (result.status === "dry-run") {
+    console.log("DRY RUN ONLY — NO INVENTORY WAS LOCKED AND NO RESERVATION WAS CREATED");
+  }
+}
+
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
-  if (command !== "check-auth" && command !== "slots" && command !== "preview") {
-    throw new Error("Usage: cli.ts <check-auth|slots|preview> [--name value ...]");
+  if (command !== "check-auth" && command !== "slots" && command !== "preview" && command !== "book") {
+    throw new Error("Usage: cli.ts <check-auth|slots|preview|book> [--name value ...] [--execute]");
   }
   const credential = await loadCredential();
   const client = new OpenTableBridgeClient({ credential });
   const flags = command === "check-auth" ? new Map<string, string>() : parseFlags(args);
   const databaseRegion = flags.get("database-region");
-  const adapter = new BrowserBridgeOpenTableReadAdapter(client, {
+  const adapterOptions = {
     ...(databaseRegion === undefined ? {} : { databaseRegion }),
-    onDiagnostic: (message) => console.warn(message),
-  });
+    onDiagnostic: (message: string) => console.warn(message),
+  };
+  const adapter = command === "book"
+    ? new BrowserBridgeOpenTableBookingAdapter(client, adapterOptions)
+    : new BrowserBridgeOpenTableReadAdapter(client, adapterOptions);
   try {
     if (command === "check-auth") console.log(JSON.stringify(await adapter.checkAuthentication()));
     else if (command === "slots") await runSlots(adapter, flags);
-    else await runPreview(adapter, flags);
+    else if (command === "preview") await runPreview(adapter, flags);
+    else await runBook(adapter as BrowserBridgeOpenTableBookingAdapter, flags);
   } finally {
     await adapter.close();
   }

@@ -1,13 +1,10 @@
 # OpenTableBot
 
 Local-first engineering foundation for a pre-authorized restaurant reservation
-assistant. Phase 1B connects a normal, user-controlled Chrome session to a
-local Node.js process for authenticated, read-only OpenTable availability and
-booking-term previews.
-
-Phase 2 fetches the server-rendered `/booking/details` document as data and
-normalizes its terms. No booking preparation, slot locking, checkout
-interaction, account mutation, or reservation submission is implemented.
+assistant. Phase 3 adds a controlled, single-shot Standard reservation path to
+the paired normal-Chrome architecture. It is dry-run by default and implements
+an explicit capability, real slot lock, post-lock terms revalidation, and one
+reservation-submission attempt. It is not a scheduler, watcher, or sniper.
 
 ## Requirements
 
@@ -93,6 +90,24 @@ Optional policy flags include `--allow-prepaid`, `--max-prepaid-cents`,
 with `--slot-id`, `--seating`, or `--experience-id`. The command always prints
 `DRY RUN ONLY` and never locks inventory or creates a reservation.
 
+The controlled command has the same target/selection flags:
+
+```sh
+npm run opentable:book -- --restaurant-id 12345 --restaurant-name "Example Restaurant" \
+  --date 2026-09-01 --party 2 --earliest 18:00 --latest 20:00 \
+  --preferred 19:00 --timezone America/New_York --auto-book-authorized true
+```
+
+Without the standalone `--execute` flag it cannot create a booking capability
+or lock inventory. `--execute` enables one controlled Standard lock and at most
+one submission. Payment-backed, prepaid, Experience, and interactive SCA/3DS
+bookings fail closed.
+
+A lock has four explicit outcomes: `LOCK_NOT_DISPATCHED`, `LOCK_REJECTED`,
+`LOCK_CONFIRMED`, and `LOCK_OUTCOME_UNKNOWN`. The last state is terminal for
+that authorization: the lock is never retried automatically and no reservation
+may be submitted from an abandoned or unacknowledged browser-local result.
+
 Stop the bridge with Ctrl+C. Revoke an existing pairing with:
 
 ```sh
@@ -106,9 +121,10 @@ recovery, threat boundaries, and permission rationale.
 
 The WebSocket server binds only to `127.0.0.1`. Both the extension and local
 controller authenticate with a random paired credential. Messages are
-versioned, strictly validated, deadline-bound, and limited to status,
-authentication evidence, and availability. The extension exposes no arbitrary
-page query or script execution interface.
+versioned, strictly validated, deadline-bound, and limited to narrow status,
+read, authorization, lock, acknowledgement, revalidation, and submission
+messages. The extension exposes no arbitrary URL, method, request body, fetch,
+or script execution interface.
 
 OpenTable cookies, storage, headers, and account tokens never leave Chrome.
 Before an availability result crosses the extension boundary it is reduced to
@@ -125,8 +141,9 @@ Experience metadata, structured prepaid/cancellation/no-show terms, currency,
 whether a payment method is required, and observable strong-authentication
 state. Saved-card identifiers and details, payment tokens, profile data,
 cookies, headers, page query secrets, and raw provider payloads never cross
-into Node. Unknown money, payment, currency, or SCA facts remain unknown and
-policy evaluation fails closed.
+into Node. Unknown monetary, payment, or SCA facts remain unknown and fail
+closed. Unknown currency alone is accepted only when prepaid, cancellation,
+no-show, and payment exposure are all confirmed absent.
 
 Challenge, access-denied, rate-limited, unauthenticated, malformed, and
 unclassifiable states fail closed. This project will not implement CAPTCHA

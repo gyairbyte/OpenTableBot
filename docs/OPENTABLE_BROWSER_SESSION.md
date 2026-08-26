@@ -4,6 +4,26 @@ Phase 1B uses the user's normal Chrome session plus an unpacked read-only MV3
 extension. Node does not launch or control Chrome and does not read a Chrome
 profile.
 
+Phase 3 adds only five explicit controlled-booking operations:
+`AUTHORIZE_BOOKING`, `LOCK_SLOT`, `ACKNOWLEDGE_LOCK`,
+`REVALIDATE_PREPARED_BOOKING`, and `SUBMIT_RESERVATION`. None accepts a URL,
+method, headers, provider request body, JavaScript, provider token, or payment
+data. MAIN-world code owns the fixed Standard provider operations.
+
+`opentable:book` is dry-run by default. The standalone `--execute` flag is the
+developer safety interlock and must be used only after checking the exact
+displayed selection. If a dispatched submission cannot be confirmed, it
+returns terminal `OUTCOME_UNKNOWN`; do not retry before checking the user's
+OpenTable reservations manually.
+
+`LOCK_SLOT` uses one absolute deadline across Node and Chrome. Its sanitized
+stage log distinguishes a timeout before provider dispatch
+(`LOCK_NOT_DISPATCHED`) from any interruption after dispatch
+(`LOCK_OUTCOME_UNKNOWN`). A confirmed response is not submit-capable until Node
+acknowledges it and a separate post-lock revalidation succeeds. If the bridge
+disconnects, the content request expires, or a result arrives after abandonment,
+the browser-local handle is orphaned and can only expire; it is never submitted.
+
 ## Build, load, and pair
 
 ```sh

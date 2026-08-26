@@ -84,15 +84,80 @@ page state cannot cross the bridge as part of a status message.
 The extension requests no cookies, tabs, scripting, webRequest, debugger,
 native messaging, downloads, history, identity, or broad website permission.
 
-## Adapter separation and future flow
+## Phase 3 controlled booking flow
+
+```text
+exact slot + sanitized preview + approved policy
+    -> AUTHORIZE_BOOKING (30-second, one-time capability)
+    -> LOCK_SLOT (fixed BookDetailsStandardSlotLock mutation; 25-second deadline)
+    -> LOCK_CONFIRMED + opaque pending handle (raw lock/tokens remain in MAIN world)
+    -> ACKNOWLEDGE_LOCK
+    -> REVALIDATE_PREPARED_BOOKING (fixed GET /booking/details)
+    -> sanitized, policy-approved PreparedBooking
+    -> SUBMIT_RESERVATION (fixed /dapi/booking/make-reservation POST)
+    -> sanitized confirmation | OUTCOME_UNKNOWN
+```
+
+Every capability and prepared handle is an unguessable browser-generated UUID
+bound to the target, slot, restaurant, date, time, offset timestamp, party,
+seating, Standard kind, preview reference, and exact approved preview. The lock
+capability is single-use. Prepared handles use a conservative 60-second local
+expiry because the current provider lock is short-lived and its response does
+not expose a dependable expiry.
+
+Raw slot hashes, availability tokens, slot-lock IDs, profile PII, cookies,
+saved payment state, and provider security tokens remain in MAIN-world memory.
+The submission state changes to `SUBMITTING` before dispatch. Confirmed and
+ambiguous results are cached; the provider POST is never repeated for that
+handle. A post-dispatch timeout, connection loss, 5xx, malformed success, or
+missing confirmation becomes terminal `OUTCOME_UNKNOWN`.
+
+### Lock deadline and interruption model
+
+Node creates one absolute 25-second lock deadline and sends it unchanged through
+the loopback server, MV3 service worker, content script, and MAIN-world request.
+The provider fetch gets only the remaining duration minus a 250 ms response
+margin. The bridge server and Node wait against that same absolute deadline;
+there are no nested 15/20-second lock timers that can expire first.
+
+The provider dispatch boundary is the MAIN-world `fetch` initiation. An
+interruption before `PROVIDER_DISPATCHED` is `LOCK_NOT_DISPATCHED`. An
+interruption at or after it is `LOCK_OUTCOME_UNKNOWN`, never an automatic retry.
+Only an explicit provider failure payload is `LOCK_REJECTED`; a non-success HTTP
+response without a definitive lock payload remains unknown after dispatch.
+
+Lock and revalidation are separate requests. A confirmed lock first creates a
+browser-local `PENDING_ACK` record. Node must receive the correlated result and
+send `ACKNOWLEDGE_LOCK`, after which a separate revalidation may move it from
+`ACKNOWLEDGED` to `REVALIDATED`. Only `REVALIDATED` is submit-capable. If Node,
+the WebSocket, service worker, content script, or page operation abandons the
+lock, a late success is `ORPHANED`. Revalidation that finishes after its caller
+deadline also stays `ORPHANED`; neither state can be submitted.
+
+Sanitized lock telemetry uses one correlation ID and monotonic stages:
+`LOCK_REQUEST_ACCEPTED`, `PAGE_OPERATION_RECEIVED`, `PROVIDER_DISPATCHED`,
+`PROVIDER_RESPONSE_RECEIVED`, `LOCK_PARSED`, `PREPARED_STATE_CREATED`,
+`RESPONSE_SENT_TO_NODE`, and `RESPONSE_RECEIVED_BY_NODE`. Events contain only
+the ID, stage, elapsed milliseconds, and optional outcome category—never raw
+provider payloads, slot hashes, cookies, credentials, or payment data.
+
+MV3 reconnect cannot make an interrupted write safe. The active service worker
+marks in-flight lock IDs abandoned when its WebSocket closes. A service-worker
+restart or page navigation can lose volatile correlation and therefore fails
+closed as unknown after dispatch; raw lock material is never persisted. A late
+response with no live pending Node request is discarded, while its MAIN-world
+record remains pending/unusable or is explicitly orphaned and expires naturally.
+
+## Adapter separation
 
 `OpenTableReadAdapter` exposes authentication checking, slot discovery, and
 read-only `getBookingPreview`. A preview is a `BookingPreview`, not a
 `PreparedBooking`, because no inventory was held. The implementation has no
 prepare, lock, book, cancel, favorites, or profile method.
-`OpenTableBookingAdapter` remains a separate future interface for an explicit
-prepare/lock step and booking submission; Phase 2 does not instantiate or
-simulate it.
+`OpenTableBookingAdapter` is implemented separately from the read adapter. A
+read-only preview reference cannot lock: policy approval must first create a
+short-lived booking authorization. `PreparedBooking` now means an actual held
+slot, not a simulated checkout context.
 
 The existing provider-neutral policy model remains future-facing: a prepared
 booking would carry an opaque in-memory handle and a normalized preview, with

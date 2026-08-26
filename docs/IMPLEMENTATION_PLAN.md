@@ -46,9 +46,30 @@ returned a sanitized booking preview and a deterministic fail-closed policy
 result without navigating to checkout, locking inventory, or creating a
 reservation.
 
+## Phase 3: controlled slot lock and booking (implemented)
+
+- Unknown currency is accepted only for confirmed zero monetary/payment exposure
+- One-time, short-lived authorization is distinct from the preview reference
+- Current Standard persisted-query lock is executed in normal Chrome
+- Raw provider handles and signed-in profile data remain browser-local
+- Critical terms are fetched, sanitized, normalized, and revalidated after lock
+- The make-reservation request is built only inside Chrome and dispatched once
+- Ambiguous post-dispatch outcomes become terminal `OUTCOME_UNKNOWN`
+- The CLI is dry-run by default and needs standalone `--execute` for writes
+- Lock uses one propagated 25-second deadline and an explicit provider dispatch boundary
+- Lock outcomes are typed as not-dispatched, rejected, confirmed, or unknown
+- Lock acknowledgement and post-lock revalidation are separate fail-closed steps
+- Late lock success after caller abandonment is browser-local `ORPHANED` state
+- Correlated, sanitized stage telemetry identifies the last completed lock boundary
+
+Live Stage A read-only evidence succeeded. The first explicitly confirmed Stage
+B lock attempt timed out with the old combined lock/revalidation path; available
+logs could not prove whether its provider request was dispatched. It was not
+retried, no submission occurred, and Stage C was not started. The deterministic
+hardening above was completed without another live write.
+
 ## Later phases (not started)
 
-- Phase 3: explicit slot preparation/locking and controlled booking design
 - Phase 4: bounded known-drop scheduling
 - Phase 5: durable cancellation watching
 - Phase 6: notifications and operational hardening

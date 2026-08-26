@@ -113,7 +113,7 @@ export const BookingPreviewSchema = z.strictObject({
 
 export type BookingPreview = z.infer<typeof BookingPreviewSchema>;
 
-export const BookingConfirmationSchema = z.object({
+export const BookingConfirmationSchema = z.strictObject({
   confirmationId: z.string().min(1),
   slotId: z.string().min(1),
   restaurantId: z.string().min(1),
