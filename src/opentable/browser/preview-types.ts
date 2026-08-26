@@ -23,8 +23,7 @@ export const SafeBookingPreviewDataSchema = z
         id: z.number().int().positive(),
         tableCategory: z.string().min(1).max(100),
       })
-      .strict()
-      .optional(),
+      .strict(),
     experience: z
       .object({
         id: z.union([z.string(), z.number()]),

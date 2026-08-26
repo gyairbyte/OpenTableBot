@@ -262,6 +262,19 @@ describe("read-only booking preview normalization", () => {
     ).toThrow(expected);
   });
 
+  it("fails closed when sanitized seating contradicts its provider dining area", () => {
+    expect(() =>
+      normalizeBookingPreview(
+        result({
+          seatingType: "default",
+          diningArea: { id: 10, tableCategory: "outdoor" },
+        }),
+        makeTarget(),
+        makeSlot(),
+      ),
+    ).toThrow(/seating/iu);
+  });
+
   it("represents an unobserved currency as unknown", () => {
     const preview = normalizeBookingPreview(
       result({ currencyCode: undefined }),

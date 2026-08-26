@@ -152,7 +152,9 @@ export function normalizeBookingPreview(
   if (
     request.seatingType !== slot.seatingType ||
     data.seatingType.toLowerCase().replace(/[\s_-]/gu, "") !==
-      providerSeatingType(slot.seatingType).toLowerCase().replace(/[\s_-]/gu, "")
+      providerSeatingType(slot.seatingType).toLowerCase().replace(/[\s_-]/gu, "") ||
+    data.diningArea.tableCategory.toLowerCase().replace(/[\s_-]/gu, "") !==
+      data.seatingType.toLowerCase().replace(/[\s_-]/gu, "")
   ) {
     throw invariant("Booking preview seating did not match the selected slot");
   }

@@ -205,6 +205,10 @@ function providerSeatingType(seatingType: string): string {
   return seatingType;
 }
 
+function compactProviderSeating(value: string): string {
+  return value.toLowerCase().replace(/[\s_-]/gu, "");
+}
+
 /** Project booking-details SSR state onto the only fields allowed into Node. */
 export function sanitizeBookingPreviewResult(
   value: unknown,
@@ -246,12 +250,35 @@ export function sanitizeBookingPreviewResult(
     ? timeSlot.diningAreasBySeating.filter(isRecord)
     : [];
   const expectedProviderSeating = providerSeatingType(request.seatingType);
-  const diningArea =
-    diningAreas.find(
-      (area) =>
-        area.tableCategory === expectedProviderSeating &&
-        typeof area.diningAreaId === "number",
-    ) ?? diningAreas.find((area) => typeof area.diningAreaId === "number");
+  const validDiningAreas = diningAreas.filter(
+    (area) =>
+      typeof area.diningAreaId === "number" &&
+      Number.isInteger(area.diningAreaId) &&
+      area.diningAreaId > 0 &&
+      stringValue(area.tableCategory) !== undefined,
+  );
+  if (validDiningAreas.length === 0) {
+    throw new Error(
+      "BOOKING_PREVIEW_SEATING_UNKNOWN: Provider response did not independently establish seating",
+    );
+  }
+  const matchingDiningAreas = validDiningAreas.filter(
+    (area) =>
+      compactProviderSeating(String(area.tableCategory)) ===
+      compactProviderSeating(expectedProviderSeating),
+  );
+  if (matchingDiningAreas.length === 0) {
+    throw new Error(
+      "BOOKING_PREVIEW_SEATING_MISMATCH: Requested seating was absent from the provider response",
+    );
+  }
+  if (matchingDiningAreas.length > 1) {
+    throw new Error(
+      "BOOKING_PREVIEW_SEATING_AMBIGUOUS: Provider response contained multiple matching dining areas",
+    );
+  }
+  const diningArea = matchingDiningAreas[0]!;
+  const actualProviderSeating = String(diningArea.tableCategory);
 
   let experience: SafeBookingPreviewData["experience"];
   if (request.reservationKind.kind === "experience") {
@@ -316,7 +343,7 @@ export function sanitizeBookingPreviewResult(
       : { restaurantName: plainText(restaurant.name)! }),
     reservationDateTime,
     partySize: root.partySize,
-    seatingType: expectedProviderSeating,
+    seatingType: actualProviderSeating,
     ...(stringValue(timeSlot.reservationType) === undefined
       ? {}
       : { reservationType: stringValue(timeSlot.reservationType)! }),
@@ -336,14 +363,10 @@ export function sanitizeBookingPreviewResult(
     ...(strongAuthenticationRequired === undefined
       ? {}
       : { strongAuthenticationRequired }),
-    ...(diningArea === undefined
-      ? {}
-      : {
-          diningArea: {
-            id: diningArea.diningAreaId,
-            tableCategory: String(diningArea.tableCategory ?? "unknown"),
-          },
-        }),
+    diningArea: {
+      id: diningArea.diningAreaId,
+      tableCategory: actualProviderSeating,
+    },
     ...(experience === undefined ? {} : { experience }),
   });
 }

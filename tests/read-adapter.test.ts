@@ -66,6 +66,7 @@ class FakeBridgeClient implements OpenTableBridgeClientPort {
         reservationType: "Standard",
         creditCardRequired: false,
         currencyCode: "USD",
+        diningArea: { id: 10, tableCategory: "default" },
       },
     };
   }
