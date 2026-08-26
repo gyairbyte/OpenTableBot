@@ -15,6 +15,7 @@
     "opentable:bridge": "tsx src/opentable/bridge/bridge-cli.ts",
     "opentable:check-auth": "tsx src/opentable/bridge/cli.ts check-auth",
     "opentable:slots": "tsx src/opentable/bridge/cli.ts slots",
+    "opentable:preview": "tsx src/opentable/bridge/cli.ts preview",
     "opentable:status": "tsx src/opentable/bridge/bridge-cli.ts status",
     "test": "vitest run",
     "test:watch": "vitest",

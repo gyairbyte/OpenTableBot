@@ -18,6 +18,8 @@ const rawAvailableSlotSchema = z
     timeOffsetMinutes: z.number().int().optional(),
     attributes: z.array(z.string()).optional(),
     type: z.string().optional(),
+    previewReference: z.string().uuid().optional(),
+    experienceIds: z.array(z.union([z.string(), z.number()])).optional(),
     dateTime: z.string().optional(),
     startDateTime: z.string().optional(),
   })
@@ -280,6 +282,20 @@ function stableSlotId(parts: readonly (string | number)[]): string {
   return `ot-read-${digest.slice(0, 20)}`;
 }
 
+function reservationKinds(
+  slot: z.infer<typeof rawAvailableSlotSchema>,
+): readonly ReservationSlot["reservationKind"][] {
+  const providerType = slot.type?.trim() || "unknown";
+  if (/^standard$/iu.test(providerType)) return [{ kind: "standard" }];
+  if (/^experience$/iu.test(providerType)) {
+    const experienceIds = [...new Set((slot.experienceIds ?? []).map(String))];
+    return experienceIds.length > 0
+      ? experienceIds.map((experienceId) => ({ kind: "experience", experienceId }))
+      : [{ kind: "unknown", providerType: "Experience without an identifier" }];
+  }
+  return [{ kind: "unknown", providerType }];
+}
+
 function parseAvailableSlot(value: unknown): z.infer<typeof rawAvailableSlotSchema> {
   const parsed = rawSlotSchema.safeParse(value);
   if (!parsed.success) throw malformed("Malformed slot in availability response");
@@ -381,24 +397,36 @@ export function normalizeAvailabilityObservation(
 
         const seating = normalizeSeating(slot.attributes, slot.type);
         diagnostics.push(...seating.diagnostics);
-        for (const seatingType of seating.seatingTypes) {
-          slots.push(
-            ReservationSlotSchema.parse({
-              id: stableSlotId([
-                target.restaurant.id,
+        for (const reservationKind of reservationKinds(slot)) {
+          for (const seatingType of seating.seatingTypes) {
+            slots.push(
+              ReservationSlotSchema.parse({
+                id: stableSlotId([
+                  target.restaurant.id,
+                  localDate,
+                  localTime,
+                  seatingType,
+                  reservationKind.kind,
+                  reservationKind.kind === "experience"
+                    ? reservationKind.experienceId
+                    : reservationKind.kind === "unknown"
+                      ? reservationKind.providerType
+                      : "standard",
+                  rawSlotIndex,
+                ]),
+                restaurantId: target.restaurant.id,
+                startsAt,
                 localDate,
                 localTime,
+                partySize: target.partySize,
                 seatingType,
-                rawSlotIndex,
-              ]),
-              restaurantId: target.restaurant.id,
-              startsAt,
-              localDate,
-              localTime,
-              partySize: target.partySize,
-              seatingType,
-            }),
-          );
+                reservationKind,
+                ...(slot.previewReference === undefined
+                  ? {}
+                  : { previewReference: slot.previewReference }),
+              }),
+            );
+          }
         }
       }
     }

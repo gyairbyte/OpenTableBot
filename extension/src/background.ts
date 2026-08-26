@@ -3,6 +3,7 @@ import {
   DEFAULT_BRIDGE_PORT,
   DEFAULT_REQUEST_TIMEOUT_MS,
   FindSlotsRequestSchema,
+  BookingPreviewRequestPayloadSchema,
   OpenTablePageUrlSchema,
   PairingCodeSchema,
   bridgeUrl,
@@ -11,8 +12,10 @@ import {
   type AuthStatusRequest,
   type BridgeMessage,
   type FindSlotsRequest,
+  type GetBookingPreviewRequest,
 } from "../../src/opentable/bridge/protocol.js";
 import { SafeAvailabilityDataSchema } from "../../src/opentable/browser/availability-types.js";
+import { SafeBookingPreviewDataSchema } from "../../src/opentable/browser/preview-types.js";
 import { OpenTablePageKind } from "../../src/opentable/browser/page-classifier.js";
 
 const STORAGE_CREDENTIAL = "bridgeCredential";
@@ -160,6 +163,63 @@ async function forwardFindSlots(message: FindSlotsRequest): Promise<void> {
   }
 }
 
+async function forwardBookingPreview(
+  message: GetBookingPreviewRequest,
+): Promise<void> {
+  const tabId = state.activeTabId;
+  if (tabId === undefined) {
+    extensionError(message.id, "PAGE_NOT_READY", "No eligible OpenTable page is available");
+    return;
+  }
+  if (Date.now() >= message.deadlineEpochMs) {
+    extensionError(message.id, "DEADLINE_EXCEEDED", "Booking preview request deadline elapsed");
+    return;
+  }
+  try {
+    const response: unknown = await chrome.tabs.sendMessage(tabId, {
+      type: "OTB_GET_BOOKING_PREVIEW",
+      request: message.request,
+    });
+    if (!isRecord(response) || response.ok !== true) {
+      const detail =
+        isRecord(response) && typeof response.error === "string"
+          ? response.error
+          : "Booking preview operation failed";
+      extensionError(
+        message.id,
+        pageFailureCode(isRecord(response) ? response.pageKind : undefined),
+        detail,
+      );
+      return;
+    }
+    const request = BookingPreviewRequestPayloadSchema.safeParse(message.request);
+    const data = SafeBookingPreviewDataSchema.safeParse(
+      isRecord(response) ? response.data : undefined,
+    );
+    if (!request.success || !data.success) {
+      extensionError(
+        message.id,
+        "PAGE_OPERATION_UNAVAILABLE",
+        "Booking preview response failed validation",
+      );
+      return;
+    }
+    send({
+      protocolVersion: BRIDGE_PROTOCOL_VERSION,
+      id: message.id,
+      type: "GET_BOOKING_PREVIEW_RESULT",
+      request: request.data,
+      data: data.data,
+    });
+  } catch (error) {
+    extensionError(
+      message.id,
+      "PAGE_OPERATION_UNAVAILABLE",
+      error instanceof Error ? error.message : "Booking preview operation failed",
+    );
+  }
+}
+
 function handleBridgeMessage(raw: string): void {
   let message: BridgeMessage;
   try {
@@ -176,6 +236,7 @@ function handleBridgeMessage(raw: string): void {
   }
   if (message.type === "AUTH_STATUS") void forwardAuthentication(message);
   if (message.type === "FIND_SLOTS") void forwardFindSlots(message);
+  if (message.type === "GET_BOOKING_PREVIEW") void forwardBookingPreview(message);
 }
 
 function scheduleReconnect(): void {

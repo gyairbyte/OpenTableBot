@@ -42,9 +42,30 @@ a normal read-only availability search so the page has loaded its operation.
 The bridge reuses a live Apollo document when available; otherwise it retains
 the normal page's exact same-origin availability request template in page
 memory. Neither template nor browser headers are sent to Node. Then run the
-`opentable:slots` command documented in the README. The page bridge can call
-only `RestaurantsAvailability`. It does not click slots, lock or
+`opentable:slots` command documented in the README. The page bridge's only
+GraphQL operation is `RestaurantsAvailability`; Phase 2 additionally permits
+the fixed details GET described below. It does not click slots, lock or
 prepare reservations, enter checkout, book, cancel, or mutate the account.
+
+## Phase 2 preview
+
+After `opentable:slots` has produced a current slot, run the
+`opentable:preview` command documented in the README. The availability result
+contains a random ten-minute browser-local reference; provider slot hashes and
+availability tokens remain in MAIN-world memory.
+
+The preview reference can perform only a credentialed same-origin
+`GET /booking/details` for the exact observed restaurant, date, time, party,
+seating, and Experience. The response is read as text and its JSON state is
+allowlisted before Node receives it. The extension never navigates to or
+executes the checkout page, and it contains no
+`BookDetailsStandardSlotLock`, `BookDetailsExperienceSlotLock`, or
+`make-reservation` request.
+
+The dry-run output may reject because currency, payment requirements, or SCA
+are unknown. That is intentional fail-closed behavior. Saved cards, account
+profile fields, card identifiers, payment tokens, cookies, authorization
+headers, and the query-bearing booking-details URL are never returned to Node.
 
 ## Recovery and revocation
 

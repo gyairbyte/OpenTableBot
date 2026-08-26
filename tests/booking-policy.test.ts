@@ -205,7 +205,7 @@ describe("other fail-closed preview checks", () => {
       makeSlot(),
       makePreview({
         isAmbiguous: true,
-        requiresStrongCustomerAuthentication: true,
+        strongAuthentication: "required",
         seatingType: "bar",
         localDate: "2026-09-02",
       }),

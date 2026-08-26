@@ -1,16 +1,26 @@
 import type { BookingTarget } from "../../domain/booking-target.js";
-import type { ReservationSlot } from "../../domain/reservation-slot.js";
+import type {
+  BookingPreview,
+  ReservationSlot,
+} from "../../domain/reservation-slot.js";
 import type { AuthenticationStatus, OpenTableReadAdapter } from "../adapter.js";
 import { AdapterFailureCategory, OpenTableAdapterError } from "../errors.js";
 import { normalizeAvailabilityObservation } from "../browser/slot-normalizer.js";
+import { normalizeBookingPreview } from "../browser/preview-normalizer.js";
 import { BridgeClientError, type OpenTableBridgeClient } from "./client.js";
-import type { FindSlotsResult } from "./protocol.js";
+import type {
+  FindSlotsResult,
+  GetBookingPreviewResult,
+} from "./protocol.js";
 
 export interface OpenTableBridgeClientPort {
   connect(): Promise<void>;
   close(): void;
   authenticationStatus(): Promise<AuthenticationStatus>;
   findSlots(request: FindSlotsResult["request"]): Promise<FindSlotsResult>;
+  getBookingPreview(
+    request: GetBookingPreviewResult["request"],
+  ): Promise<GetBookingPreviewResult>;
 }
 
 export interface BrowserBridgeReadAdapterOptions {
@@ -129,6 +139,49 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
       }
     }
     return [...new Map(normalizedSlots.map((slot) => [slot.id, slot])).values()];
+  }
+
+  async getBookingPreview(
+    target: BookingTarget,
+    slot: ReservationSlot,
+  ): Promise<BookingPreview> {
+    const authentication = await this.checkAuthentication();
+    if (!authentication.authenticated) {
+      throw new OpenTableAdapterError(
+        authentication.reason === "expired"
+          ? AdapterFailureCategory.AUTHENTICATION_EXPIRED
+          : AdapterFailureCategory.AUTHENTICATION_REQUIRED,
+        "OpenTable sign-in is required in the paired Chrome browser",
+      );
+    }
+    if (slot.previewReference === undefined) {
+      throw new OpenTableAdapterError(
+        AdapterFailureCategory.INVARIANT_MISMATCH,
+        "The selected slot has no current browser preview reference; find slots again",
+      );
+    }
+    let result: GetBookingPreviewResult;
+    try {
+      result = await this.client.getBookingPreview({
+        slotId: slot.id,
+        previewReference: slot.previewReference,
+        restaurantId: target.restaurant.id,
+        date: slot.localDate,
+        time: slot.localTime,
+        partySize: target.partySize,
+        seatingType: slot.seatingType,
+        reservationKind:
+          slot.reservationKind.kind === "experience"
+            ? {
+                kind: "experience",
+                experienceId: slot.reservationKind.experienceId,
+              }
+            : slot.reservationKind,
+      });
+    } catch (error) {
+      mapBridgeError(error);
+    }
+    return normalizeBookingPreview(result, target, slot);
   }
 }
 

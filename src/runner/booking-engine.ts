@@ -3,7 +3,10 @@ import {
   evaluateBookingPreview,
   type PolicyEvaluation,
 } from "../domain/booking-policy.js";
-import type { ReservationSlot } from "../domain/reservation-slot.js";
+import type {
+  BookingPreview,
+  ReservationSlot,
+} from "../domain/reservation-slot.js";
 import { rankAcceptableSlots } from "../domain/slot-matcher.js";
 import type {
   OpenTableBookingAdapter,
@@ -38,6 +41,15 @@ export function validatePreparedBooking(
   preparedBooking: PreparedBooking,
 ): PolicyEvaluation {
   return evaluateBookingPreview(target, slot, preparedBooking.preview);
+}
+
+/** Evaluate a read-only preview without implying that inventory was prepared. */
+export function validateBookingPreview(
+  target: BookingTarget,
+  slot: ReservationSlot,
+  preview: BookingPreview,
+): PolicyEvaluation {
+  return evaluateBookingPreview(target, slot, preview);
 }
 
 export interface BookingEngineDependencies {

@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { SafeAvailabilityDataSchema } from "../browser/availability-types.js";
+import { SafeBookingPreviewDataSchema } from "../browser/preview-types.js";
+import { SeatingTypeSchema } from "../../domain/primitives.js";
 
 export const BRIDGE_PROTOCOL_VERSION = 1 as const;
 export const DEFAULT_BRIDGE_HOST = "127.0.0.1" as const;
@@ -155,6 +157,50 @@ export const FindSlotsResultSchema = z
   })
   .strict();
 
+export const BookingPreviewRequestPayloadSchema = z
+  .object({
+    slotId: z.string().min(1).max(200),
+    previewReference: z.string().uuid(),
+    restaurantId: z.string().min(1).max(80),
+    date: DateSchema,
+    time: TimeSchema,
+    partySize: z.number().int().positive().max(50),
+    seatingType: SeatingTypeSchema,
+    reservationKind: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("standard") }).strict(),
+      z
+        .object({
+          kind: z.literal("experience"),
+          experienceId: z.string().min(1).max(80),
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal("unknown"),
+          providerType: z.string().min(1).max(100),
+        })
+        .strict(),
+    ]),
+  })
+  .strict();
+
+export const GetBookingPreviewRequestSchema = z
+  .object({
+    ...requestBaseShape,
+    type: z.literal("GET_BOOKING_PREVIEW"),
+    request: BookingPreviewRequestPayloadSchema,
+  })
+  .strict();
+
+export const GetBookingPreviewResultSchema = z
+  .object({
+    ...baseShape,
+    type: z.literal("GET_BOOKING_PREVIEW_RESULT"),
+    request: BookingPreviewRequestPayloadSchema,
+    data: SafeBookingPreviewDataSchema,
+  })
+  .strict();
+
 export const BridgeErrorCodeSchema = z.enum([
   "AUTHENTICATION_FAILED",
   "OPENTABLE_AUTHENTICATION_REQUIRED",
@@ -191,6 +237,8 @@ export const BridgeMessageSchema = z.discriminatedUnion("type", [
   AuthStatusResultSchema,
   FindSlotsRequestSchema,
   FindSlotsResultSchema,
+  GetBookingPreviewRequestSchema,
+  GetBookingPreviewResultSchema,
   ErrorMessageSchema,
 ]);
 
@@ -205,6 +253,12 @@ export type AuthStatusRequest = z.infer<typeof AuthStatusRequestSchema>;
 export type AuthStatusResult = z.infer<typeof AuthStatusResultSchema>;
 export type FindSlotsRequest = z.infer<typeof FindSlotsRequestSchema>;
 export type FindSlotsResult = z.infer<typeof FindSlotsResultSchema>;
+export type GetBookingPreviewRequest = z.infer<
+  typeof GetBookingPreviewRequestSchema
+>;
+export type GetBookingPreviewResult = z.infer<
+  typeof GetBookingPreviewResultSchema
+>;
 export type ErrorMessage = z.infer<typeof ErrorMessageSchema>;
 
 export function parseBridgeMessage(raw: string): BridgeMessage {

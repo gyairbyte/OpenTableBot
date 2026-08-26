@@ -9,6 +9,8 @@ export * from "./opentable/adapter.js";
 export * from "./opentable/errors.js";
 export * from "./opentable/browser/availability-types.js";
 export * from "./opentable/browser/page-classifier.js";
+export * from "./opentable/browser/preview-normalizer.js";
+export * from "./opentable/browser/preview-types.js";
 export * from "./opentable/browser/slot-normalizer.js";
 export * from "./opentable/bridge/index.js";
 export * from "./runner/booking-engine.js";

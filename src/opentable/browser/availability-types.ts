@@ -18,6 +18,8 @@ const SafeAvailabilitySlotSchema = z
     timeOffsetMinutes: z.number().int().optional(),
     attributes: z.array(z.string()).optional(),
     type: z.string().optional(),
+    previewReference: z.string().uuid().optional(),
+    experienceIds: z.array(z.union([z.string(), z.number()])).optional(),
     dateTime: z.string().optional(),
     startDateTime: z.string().optional(),
   })

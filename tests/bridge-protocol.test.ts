@@ -3,6 +3,7 @@ import {
   BRIDGE_PROTOCOL_VERSION,
   BridgeMessageSchema,
   FindSlotsResultSchema,
+  GetBookingPreviewResultSchema,
   OpenTablePageUrlSchema,
   sanitizeOpenTablePageUrl,
 } from "../src/opentable/bridge/protocol.js";
@@ -54,5 +55,50 @@ describe("bridge protocol", () => {
       },
     };
     expect(FindSlotsResultSchema.safeParse(result).success).toBe(false);
+  });
+
+  it("rejects sensitive or unrecognized booking-preview fields", () => {
+    const result = {
+      protocolVersion: 1,
+      id: "preview-response",
+      type: "GET_BOOKING_PREVIEW_RESULT",
+      request: {
+        slotId: "slot-1",
+        previewReference: "00000000-0000-4000-8000-000000000001",
+        restaurantId: "1",
+        date: "2026-09-01",
+        time: "19:00",
+        partySize: 2,
+        seatingType: "standard",
+        reservationKind: { kind: "standard" },
+      },
+      data: {
+        restaurantId: "1",
+        reservationDateTime: "2026-09-01T19:00",
+        partySize: 2,
+        seatingType: "default",
+        savedCardId: "must-not-cross",
+      },
+    };
+    expect(GetBookingPreviewResultSchema.safeParse(result).success).toBe(false);
+  });
+
+  it("has no lock, prepare, payment, or reservation-submission message", () => {
+    for (const type of [
+      "LOCK_SLOT",
+      "PREPARE_RESERVATION",
+      "MAKE_RESERVATION",
+      "SUBMIT_PAYMENT",
+      "BOOK",
+    ]) {
+      expect(
+        BridgeMessageSchema.safeParse({
+          protocolVersion: 1,
+          id: "forbidden-message",
+          deadlineEpochMs: Date.now() + 1_000,
+          type,
+        }).success,
+      ).toBe(false);
+    }
   });
 });

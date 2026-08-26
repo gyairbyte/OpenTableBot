@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  attachPreviewReferences,
+  extractInitialStateFromHtml,
   findAvailabilityOperation,
   installAvailabilityApolloBridge,
   mergeAvailabilityVariables,
@@ -97,5 +99,50 @@ describe("MAIN-world Apollo bridge", () => {
         databaseRegion: "NA",
       }),
     ).toEqual(captured);
+  });
+
+  it("adds a browser-local preview handle without replacing provider slot data", () => {
+    const result = attachPreviewReferences(
+      {
+        data: {
+          availability: [
+            {
+              restaurantId: "994474",
+              availabilityDays: [
+                {
+                  dayOffset: 0,
+                  slots: [
+                    {
+                      isAvailable: true,
+                      timeOffsetMinutes: 15,
+                      type: "Standard",
+                      attributes: ["default"],
+                      slotHash: "page-owned-hash",
+                      slotAvailabilityToken: "page-owned-token",
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+      { date: "2026-08-29", time: "19:00", partySize: 2 },
+    ) as {
+      data: { availability: Array<{ availabilityDays: Array<{ slots: Array<Record<string, unknown>> }> }> };
+    };
+    expect(
+      result.data.availability[0]?.availabilityDays[0]?.slots[0]?.previewReference,
+    ).toMatch(/^[0-9a-f-]{36}$/u);
+  });
+
+  it("extracts booking-details state as JSON without evaluating scripts", () => {
+    const state = extractInitialStateFromHtml(
+      '<script>window.__INITIAL_STATE__ = {"restaurant":{"restaurantId":994474},"text":"brace } in string"}; window.evil()</script>',
+    );
+    expect(state).toEqual({
+      restaurant: { restaurantId: 994474 },
+      text: "brace } in string",
+    });
   });
 });

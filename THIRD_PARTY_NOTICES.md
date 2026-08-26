@@ -6,6 +6,11 @@ implementation in <https://github.com/chrischall/fetchproxy>. Availability
 request field names in `extension/src/content.ts` were informed by
 <https://github.com/chrischall/opentable-mcp>.
 
+The Phase 2 `/booking/details` initial-state extraction pattern and selected
+booking-term field paths were adapted from `chrischall/opentable-mcp` at
+revision `858530b9c58a4b75d39d9f1c269245f092fab147`. Its slot-lock and
+reservation-submission implementations were not adapted.
+
 Copyright (c) 2026 Chris Hall
 
 Both referenced projects were published under the MIT License when reviewed:

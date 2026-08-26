@@ -36,6 +36,11 @@ export interface OpenTableReadAdapter {
   start?(): Promise<void>;
   checkAuthentication(): Promise<AuthenticationStatus>;
   findSlots(target: BookingTarget): Promise<readonly ReservationSlot[]>;
+  /** Read booking terms without preparing, holding, or locking inventory. */
+  getBookingPreview(
+    target: BookingTarget,
+    slot: ReservationSlot,
+  ): Promise<BookingPreview>;
   close?(): Promise<void>;
 }
 
