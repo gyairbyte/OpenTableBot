@@ -86,8 +86,15 @@ npm run opentable:preview -- \
 
 Optional policy flags include `--allow-prepaid`, `--max-prepaid-cents`,
 `--max-cancellation-no-show-cents`, `--allow-experiences`, and
-`--allow-payment-method-required`. A specific normalized result can be chosen
-with `--slot-id`, `--seating`, or `--experience-id`. The command always prints
+`--allow-payment-method-required`. Dining areas default to
+`--dining-area-mode any`, with provider order as the deterministic selection
+rule. `allow` accepts comma-separated `--dining-area-categories` and/or exact
+`--dining-area-labels`; `prefer` accepts ordered entries such as
+`--dining-area-preferences category:rooftop,label:Sky Terrace` and
+`--dining-area-fallback any|none`. A specific normalized result can be chosen
+with `--slot-id`, `--dining-area-category`, `--dining-area-label`, the legacy
+`--seating`, or `--experience-id`. The command evaluates candidates with
+read-only previews until the first policy-authorized option. It always prints
 `DRY RUN ONLY` and never locks inventory or creates a reservation.
 
 The controlled command has the same target/selection flags:
@@ -128,13 +135,23 @@ or script execution interface.
 
 OpenTable cookies, storage, headers, and account tokens never leave Chrome.
 Before an availability result crosses the extension boundary it is reduced to
-restaurant/day identifiers, a short-lived browser-local preview reference, and
-non-sensitive slot time/seating/Experience fields. Booking hashes and
+restaurant/day identifiers, short-lived browser-local preview references, and
+non-sensitive slot time/seating/Experience fields. A fixed read-only details
+request then expands each time into distinct dining-area candidates containing
+only normalized category, sanitized provider label, and provider order. Booking hashes and
 availability tokens remain in page memory. A preview reference can invoke only
 one fixed same-origin `GET /booking/details`; it cannot invoke either
 `BookDetailsStandardSlotLock` or `BookDetailsExperienceSlotLock`. Node
-revalidates restaurant, date, time, party, seating, reservation kind, time
+revalidates restaurant, date, time, party, exact dining area, reservation kind, time
 zone, and payload shape.
+
+Reservation kind and dining area are independent. Standard remains the default
+and Experiences require explicit authorization. `ANY` dining area accepts
+unrecognized provider labels; `ALLOW` is an exact category/label allowlist;
+`PREFER` ranks configured categories or labels first and follows its explicit
+fallback. The legacy target field `allowedSeatingTypes` remains only as a
+deterministic compatibility shorthand and cannot coexist with
+`diningAreaPolicy`.
 
 Preview output is an explicit allowlist: restaurant and slot invariants,
 Experience metadata, structured prepaid/cancellation/no-show terms, currency,

@@ -61,6 +61,10 @@ reservation.
 - Lock acknowledgement and post-lock revalidation are separate fail-closed steps
 - Late lock success after caller abandonment is browser-local `ORPHANED` state
 - Correlated, sanitized stage telemetry identifies the last completed lock boundary
+- Reservation kind and dining area are modeled independently
+- Provider-ordered dining areas become distinct opaque-reference candidates
+- `ANY`, `ALLOW`, and `PREFER` policies support arbitrary sanitized labels
+- Read-only first-valid preview selection advances past rejected candidates
 
 Live Stage A read-only evidence succeeded. The first explicitly confirmed Stage
 B lock attempt timed out with the old combined lock/revalidation path; available

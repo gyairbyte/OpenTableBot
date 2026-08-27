@@ -7,6 +7,7 @@ import {
   OpenTablePageUrlSchema,
   sanitizeOpenTablePageUrl,
   AuthorizeBookingRequestSchema,
+  ListDiningAreasResultSchema,
   SubmitReservationResultSchema,
 } from "../src/opentable/bridge/protocol.js";
 import { makePreview } from "./fixtures.js";
@@ -106,6 +107,43 @@ describe("bridge protocol", () => {
     }
   });
 
+  it("keeps provider dining-area identities and tokens out of Node results", () => {
+    const result = {
+      protocolVersion: 1,
+      id: "dining-area-result",
+      type: "LIST_DINING_AREAS_RESULT",
+      request: {
+        baseSlotId: "slot-1",
+        previewReference: "00000000-0000-4000-8000-000000000001",
+        restaurantId: "restaurant-123",
+        date: "2026-09-01",
+        time: "19:00",
+        partySize: 2,
+        seatingType: "standard",
+        reservationKind: { kind: "standard" },
+      },
+      candidates: [{
+        previewReference: "00000000-0000-4000-8000-000000000002",
+        diningArea: {
+          category: "dining-room",
+          label: "Dining Room",
+          providerOrder: 0,
+        },
+      }],
+    };
+    expect(ListDiningAreasResultSchema.safeParse(result).success).toBe(true);
+    for (const injected of [
+      { diningAreaId: 123 },
+      { providerId: 123 },
+      { slotAvailabilityToken: "secret" },
+    ]) {
+      expect(ListDiningAreasResultSchema.safeParse({
+        ...result,
+        candidates: [{ ...result.candidates[0], ...injected }],
+      }).success).toBe(false);
+    }
+  });
+
   it("accepts an exact Standard authorization but rejects provider payload controls", () => {
     const valid = {
       protocolVersion: 1,
@@ -122,6 +160,11 @@ describe("bridge protocol", () => {
         startsAt: "2026-09-01T19:00:00-04:00",
         partySize: 2,
         seatingType: "standard",
+        diningArea: {
+          category: "dining-room",
+          label: "Dining Room",
+          providerOrder: 0,
+        },
         reservationKind: { kind: "standard" },
         approvedPreview: makePreview(),
       },

@@ -17,15 +17,20 @@ BookingTarget / CLI
 
 ## Phase 2 read-only booking preview
 
-Each available slot may carry a random, short-lived `previewReference`. The
-reference is not an OpenTable token: it addresses an in-memory record inside
-the page bridge. Slot hashes and availability tokens never leave Chrome.
+Each available time may carry a random, short-lived base `previewReference`.
+The reference is not an OpenTable token: it addresses an in-memory record
+inside the page bridge. A fixed details read discovers provider-ordered dining
+areas and creates one new opaque reference per exact booking candidate. Slot
+hashes, availability tokens, and dining-area IDs never leave Chrome.
 
 ```text
-BookingTarget + selected ReservationSlot
+BookingTarget + observed time
+    -> LIST_DINING_AREAS (fixed read-only details request)
+    -> distinct sanitized candidates in provider order
+BookingTarget + selected exact ReservationSlot
     -> GET_BOOKING_PREVIEW (strict bridge request)
     -> validate previewReference against observed restaurant/date/time/party/
-       seating/Experience
+       broad seating/exact dining area/Experience
     -> fixed same-origin GET /booking/details
     -> parse __INITIAL_STATE__ as JSON without executing its scripts
     -> in-Chrome allowlist projection
@@ -63,7 +68,9 @@ capability.
 
 The isolated content script projects the result onto an allowlist before it can
 reach Node. Allowed response fields are restaurant ID, day offset, availability,
-relative/authoritative time, seating attributes, and seating type. Availability
+relative/authoritative time, seating attributes, and seating type. Dining-area
+discovery adds only normalized category, a sanitized provider label, provider
+order, and a new opaque preview reference. Availability
 tokens, booking hashes, cookies, authorization data, account data, and all
 unrecognized fields are removed. The Node normalizer then checks request/
 response restaurant, date, time, and party invariants and fails closed on
@@ -100,7 +107,7 @@ exact slot + sanitized preview + approved policy
 
 Every capability and prepared handle is an unguessable browser-generated UUID
 bound to the target, slot, restaurant, date, time, offset timestamp, party,
-seating, Standard kind, preview reference, and exact approved preview. The lock
+seating, exact dining area, Standard kind, preview reference, and exact approved preview. The lock
 capability is single-use. Prepared handles use a conservative 60-second local
 expiry because the current provider lock is short-lived and its response does
 not expose a dependable expiry.
@@ -177,6 +184,16 @@ reservation kinds; known/unknown prepaid, cancellation, and no-show exposure;
 known/unknown currency; payment-method requirement; and required/not-required/
 unknown SCA. Experience and payment-method requirements require separate target
 authorization. All unknown safety-relevant values reject.
+
+Reservation kind is independent from dining area. Targets use `ANY`, `ALLOW`,
+or `PREFER` dining-area policy. `ANY` accepts arbitrary sanitized provider
+labels and selects by provider order. `ALLOW` accepts only configured categories
+or exact labels. `PREFER` uses an ordered category/label list and an explicit
+`any` or `none` fallback. The legacy `allowedSeatingTypes` target field maps to
+an `ALLOW` policy and is rejected if supplied together with the new policy.
+Candidate evaluation performs only read-only previews and advances past preview
+or policy failures; no authorization or write happens until an exact candidate
+is selected.
 
 Current observed OpenTable terms describe no-show and late-cancellation charges
 as alternative triggers (for example, “no-shows or cancellations … incur” one

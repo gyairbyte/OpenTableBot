@@ -44,6 +44,11 @@ export function makeSlot(
     localTime: "19:00",
     partySize: 2,
     seatingType: "standard",
+    diningArea: {
+      category: "dining-room",
+      label: "Dining Room",
+      providerOrder: 0,
+    },
     previewReference: "00000000-0000-4000-8000-000000000001",
     reservationKind: { kind: "standard" },
     ...overrides,
@@ -60,6 +65,11 @@ export function makePreview(
     localTime: "19:00",
     partySize: 2,
     seatingType: "standard",
+    diningArea: {
+      category: "dining-room",
+      label: "Dining Room",
+      providerOrder: 0,
+    },
     reservationKind: { kind: "standard" },
     prepaid: { status: "not-required" },
     cancellationFee: { status: "none" },

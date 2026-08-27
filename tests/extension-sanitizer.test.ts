@@ -3,6 +3,7 @@ import {
   sanitizeAvailabilityResult,
   sanitizeBookingPreviewResult,
 } from "../extension/src/content.js";
+import type { DiningAreaOption } from "../src/domain/dining-area.js";
 
 const standardPreviewRequest = {
   slotId: "slot-seating-regression",
@@ -12,8 +13,24 @@ const standardPreviewRequest = {
   time: "19:00",
   partySize: 2,
   seatingType: "standard" as const,
+  diningArea: {
+    category: "dining-room" as const,
+    label: "Dining Room",
+    providerOrder: 0,
+  },
   reservationKind: { kind: "standard" as const },
 };
+
+function exactPreviewResult(
+  detailsState: Record<string, unknown>,
+  providerId: number,
+  option: DiningAreaOption = standardPreviewRequest.diningArea,
+): Record<string, unknown> {
+  return {
+    detailsState,
+    selectedDiningArea: { providerId, option },
+  };
+}
 
 function bookingDetailsWithDiningAreas(
   diningAreasBySeating: readonly Record<string, unknown>[],
@@ -97,7 +114,7 @@ describe("extension availability sanitizer", () => {
 
   it("projects booking details without browser, account, or payment secrets", () => {
     const sanitized = sanitizeBookingPreviewResult(
-      {
+      exactPreviewResult({
         restaurant: {
           restaurantId: 994474,
           name: "Don Angie",
@@ -133,7 +150,7 @@ describe("extension availability sanitizer", () => {
         },
         account: { email: "must-not-cross@example.test", sessionId: "secret" },
         headers: { Cookie: "secret", Authorization: "secret", "Set-Cookie": "secret" },
-      },
+      }, 1),
       {
         slotId: "slot-1",
         previewReference: "00000000-0000-4000-8000-000000000001",
@@ -142,6 +159,7 @@ describe("extension availability sanitizer", () => {
         time: "19:00",
         partySize: 2,
         seatingType: "standard",
+        diningArea: standardPreviewRequest.diningArea,
         reservationKind: { kind: "standard" },
       },
     );
@@ -156,7 +174,7 @@ describe("extension availability sanitizer", () => {
       creditCardPolicyType: "Hold",
       currencyCode: "USD",
       cancellationMessage: "Cancellations incur a $25 fee.",
-      diningArea: { id: 1, tableCategory: "default" },
+      diningArea: standardPreviewRequest.diningArea,
     });
     expect(JSON.stringify(sanitized)).not.toMatch(
       /cookie|authorization|csrf|token|last4|cardId|email|sessionId/iu,
@@ -165,7 +183,7 @@ describe("extension availability sanitizer", () => {
 
   it("normalizes the structured reservation datetime used by booking-details SSR", () => {
     const sanitized = sanitizeBookingPreviewResult(
-      {
+      exactPreviewResult({
         restaurant: { restaurantId: 1272781, name: "State of Confusion" },
         reservationDateTime: {
           reservationDate: "2026-08-24",
@@ -177,7 +195,7 @@ describe("extension availability sanitizer", () => {
           creditCardRequired: false,
           diningAreasBySeating: [{ diningAreaId: 48750, tableCategory: "default" }],
         },
-      },
+      }, 48750),
       {
         slotId: "slot-live-shape",
         previewReference: "00000000-0000-4000-8000-000000000002",
@@ -186,6 +204,7 @@ describe("extension availability sanitizer", () => {
         time: "19:00",
         partySize: 2,
         seatingType: "standard",
+        diningArea: standardPreviewRequest.diningArea,
         reservationKind: { kind: "standard" },
       },
     );
@@ -195,71 +214,78 @@ describe("extension availability sanitizer", () => {
 
   it("returns the actual provider dining area when requested seating exists", () => {
     const sanitized = sanitizeBookingPreviewResult(
-      bookingDetailsWithDiningAreas([
+      exactPreviewResult(bookingDetailsWithDiningAreas([
         { diningAreaId: 11, tableCategory: "default" },
-      ]),
+      ]), 11),
       standardPreviewRequest,
     );
 
     expect(sanitized).toMatchObject({
       seatingType: "default",
-      diningArea: { id: 11, tableCategory: "default" },
+      diningArea: standardPreviewRequest.diningArea,
     });
   });
 
   it("returns a requested seating area when it is the second provider item", () => {
     const sanitized = sanitizeBookingPreviewResult(
-      bookingDetailsWithDiningAreas([
+      exactPreviewResult(bookingDetailsWithDiningAreas([
         { diningAreaId: 11, tableCategory: "default" },
         { diningAreaId: 22, tableCategory: "outdoor" },
-      ]),
-      { ...standardPreviewRequest, seatingType: "outdoor" },
+      ]), 22, { category: "outdoor", label: "Patio", providerOrder: 1 }),
+      {
+        ...standardPreviewRequest,
+        seatingType: "outdoor",
+        diningArea: { category: "outdoor", label: "Patio", providerOrder: 1 },
+      },
     );
 
     expect(sanitized).toMatchObject({
       seatingType: "outdoor",
-      diningArea: { id: 22, tableCategory: "outdoor" },
+      diningArea: { category: "outdoor", label: "Patio", providerOrder: 1 },
     });
   });
 
   it("fails with a structured mismatch when requested seating is absent", () => {
     expect(() =>
       sanitizeBookingPreviewResult(
-        bookingDetailsWithDiningAreas([
+        exactPreviewResult(bookingDetailsWithDiningAreas([
           { diningAreaId: 22, tableCategory: "outdoor" },
-        ]),
+        ]), 11),
         standardPreviewRequest,
       ),
-    ).toThrow(/BOOKING_PREVIEW_SEATING_MISMATCH/u);
+    ).toThrow(/BOOKING_PREVIEW_DINING_AREA_MISMATCH/u);
   });
 
   it("does not fall back to the first unrelated dining area", () => {
     expect(() =>
       sanitizeBookingPreviewResult(
-        bookingDetailsWithDiningAreas([
+        exactPreviewResult(bookingDetailsWithDiningAreas([
           { diningAreaId: 11, tableCategory: "default" },
-        ]),
-        { ...standardPreviewRequest, seatingType: "outdoor" },
+        ]), 11),
+        {
+          ...standardPreviewRequest,
+          seatingType: "outdoor",
+          diningArea: { category: "outdoor", label: "Patio", providerOrder: 0 },
+        },
       ),
-    ).toThrow(/BOOKING_PREVIEW_SEATING_MISMATCH/u);
+    ).toThrow(/BOOKING_PREVIEW_DINING_AREA_MISMATCH/u);
   });
 
-  it("rejects multiple unrelated dining areas instead of selecting one", () => {
-    expect(() =>
-      sanitizeBookingPreviewResult(
-        bookingDetailsWithDiningAreas([
-          { diningAreaId: 22, tableCategory: "outdoor" },
-          { diningAreaId: 33, tableCategory: "bar" },
-        ]),
-        standardPreviewRequest,
-      ),
-    ).toThrow(/BOOKING_PREVIEW_SEATING_MISMATCH/u);
+  it("selects one exact provider identity when unrelated areas coexist", () => {
+    const sanitized = sanitizeBookingPreviewResult(
+      exactPreviewResult(bookingDetailsWithDiningAreas([
+        { diningAreaId: 22, tableCategory: "outdoor" },
+        { diningAreaId: 33, tableCategory: "bar" },
+      ]), 22),
+      standardPreviewRequest,
+    );
+    expect(sanitized.seatingType).toBe("outdoor");
   });
 
   it("fails closed when the provider supplies no usable seating information", () => {
     expect(() =>
       sanitizeBookingPreviewResult(
-        bookingDetailsWithDiningAreas([]),
+        exactPreviewResult(bookingDetailsWithDiningAreas([]), 1),
         standardPreviewRequest,
       ),
     ).toThrow(/BOOKING_PREVIEW_SEATING_UNKNOWN/u);
@@ -267,25 +293,29 @@ describe("extension availability sanitizer", () => {
 
   it("returns the provider seating label instead of copying the requested value", () => {
     const sanitized = sanitizeBookingPreviewResult(
-      bookingDetailsWithDiningAreas([
+      exactPreviewResult(bookingDetailsWithDiningAreas([
         { diningAreaId: 44, tableCategory: "highTop" },
-      ]),
-      { ...standardPreviewRequest, seatingType: "high-top" },
+      ]), 44, { category: "high-top", label: "High Top", providerOrder: 0 }),
+      {
+        ...standardPreviewRequest,
+        seatingType: "high-top",
+        diningArea: { category: "high-top", label: "High Top", providerOrder: 0 },
+      },
     );
 
     expect(sanitized.seatingType).toBe("highTop");
     expect(sanitized.seatingType).not.toBe("high-top");
   });
 
-  it("fails closed when multiple dining areas match the requested seating", () => {
+  it("fails closed when an exact provider identity appears more than once", () => {
     expect(() =>
       sanitizeBookingPreviewResult(
-        bookingDetailsWithDiningAreas([
+        exactPreviewResult(bookingDetailsWithDiningAreas([
           { diningAreaId: 11, tableCategory: "default" },
-          { diningAreaId: 12, tableCategory: "Default" },
-        ]),
+          { diningAreaId: 11, tableCategory: "Default" },
+        ]), 11),
         standardPreviewRequest,
       ),
-    ).toThrow(/BOOKING_PREVIEW_SEATING_AMBIGUOUS/u);
+    ).toThrow(/BOOKING_PREVIEW_DINING_AREA_AMBIGUOUS/u);
   });
 });

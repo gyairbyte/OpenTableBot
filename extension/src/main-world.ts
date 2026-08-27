@@ -4,11 +4,18 @@ import {
   remainingOperationMs,
   type LockTelemetryStage,
 } from "../../src/opentable/bridge/lock-lifecycle.js";
+import {
+  normalizeDiningAreaCategory,
+  sanitizeDiningAreaLabel,
+  type DiningAreaOption,
+} from "../../src/domain/dining-area.js";
 
 const REQUEST_MARKER = "opentablebot:availability-request";
 const RESPONSE_MARKER = "opentablebot:availability-response";
 const PREVIEW_REQUEST_MARKER = "opentablebot:booking-preview-request";
 const PREVIEW_RESPONSE_MARKER = "opentablebot:booking-preview-response";
+const DINING_AREAS_REQUEST_MARKER = "opentablebot:dining-areas-request";
+const DINING_AREAS_RESPONSE_MARKER = "opentablebot:dining-areas-response";
 const AUTHORIZE_REQUEST_MARKER = "opentablebot:authorize-booking-request";
 const AUTHORIZE_RESPONSE_MARKER = "opentablebot:authorize-booking-response";
 const LOCK_REQUEST_MARKER = "opentablebot:lock-slot-request";
@@ -70,11 +77,26 @@ interface BookingPreviewPageRequest {
     readonly time: string;
     readonly partySize: number;
     readonly seatingType: string;
+    readonly diningArea: DiningAreaOption;
     readonly reservationKind:
       | { readonly kind: "standard" }
       | { readonly kind: "experience"; readonly experienceId: string }
       | { readonly kind: "unknown"; readonly providerType: string };
   };
+}
+
+interface DiningAreasPageRequest {
+  readonly marker: typeof DINING_AREAS_REQUEST_MARKER;
+  readonly id: string;
+  readonly request: Omit<BookingPreviewPageRequest["request"], "diningArea"> & {
+    readonly baseSlotId: string;
+  };
+}
+
+interface ExactDiningArea {
+  readonly providerId: number;
+  readonly tableCategory: string;
+  readonly option: DiningAreaOption;
 }
 
 interface PreviewRecord {
@@ -89,6 +111,7 @@ interface PreviewRecord {
   readonly slotHash: string;
   readonly slotAvailabilityToken: string;
   readonly databaseRegion: string;
+  readonly exactDiningArea?: ExactDiningArea;
   detailsState?: unknown;
 }
 
@@ -180,6 +203,7 @@ function parseBookingPreviewPageRequest(
     typeof request.time !== "string" ||
     typeof request.partySize !== "number" ||
     typeof request.seatingType !== "string" ||
+    !isRecord(request.diningArea) ||
     !isRecord(request.reservationKind) ||
     typeof request.reservationKind.kind !== "string"
   ) {
@@ -205,6 +229,24 @@ function parseBookingPreviewPageRequest(
     return undefined;
   }
   return value as unknown as BookingPreviewPageRequest;
+}
+
+function parseDiningAreasPageRequest(value: unknown): DiningAreasPageRequest | undefined {
+  if (!isRecord(value) || value.marker !== DINING_AREAS_REQUEST_MARKER) return undefined;
+  if (typeof value.id !== "string" || !isRecord(value.request)) return undefined;
+  const request = value.request;
+  if (
+    typeof request.baseSlotId !== "string" ||
+    typeof request.previewReference !== "string" ||
+    typeof request.restaurantId !== "string" ||
+    typeof request.date !== "string" ||
+    typeof request.time !== "string" ||
+    typeof request.partySize !== "number" ||
+    typeof request.seatingType !== "string" ||
+    !isRecord(request.reservationKind) ||
+    typeof request.reservationKind.kind !== "string"
+  ) return undefined;
+  return value as unknown as DiningAreasPageRequest;
 }
 
 function parseWritePageRequest(value: unknown): WritePageRequest | undefined {
@@ -277,6 +319,7 @@ function validateStandardIntent(intent: Record<string, unknown>): { previewRefer
     typeof intent.startsAt !== "string" ||
     typeof intent.partySize !== "number" ||
     typeof intent.seatingType !== "string" ||
+    !isRecord(intent.diningArea) ||
     !isRecord(reservationKind) || reservationKind.kind !== "standard" ||
     !isRecord(preview)
   ) throw new Error("BOOKING_INVARIANT_MISMATCH: Malformed Standard booking intent");
@@ -295,7 +338,11 @@ function validateStandardIntent(intent: Record<string, unknown>): { previewRefer
     preview.localDate !== intent.date ||
     preview.localTime !== intent.time ||
     preview.partySize !== intent.partySize ||
-    preview.seatingType !== intent.seatingType
+    preview.seatingType !== intent.seatingType ||
+    !isRecord(preview.diningArea) ||
+    canonical(preview.diningArea) !== canonical(intent.diningArea) ||
+    record.exactDiningArea === undefined ||
+    canonical(record.exactDiningArea.option) !== canonical(intent.diningArea)
   ) throw new Error("BOOKING_INVARIANT_MISMATCH: Intent does not match the previewed slot");
   const cancellation = preview.cancellationFee;
   const noShow = preview.noShowFee;
@@ -653,32 +700,22 @@ function compactSeating(value: string): string {
   return value.toLowerCase().replace(/[\s_-]/gu, "");
 }
 
-async function executeBookingPreview(
-  targetWindow: ApolloWindow,
-  pageRequest: BookingPreviewPageRequest,
-): Promise<unknown> {
-  cleanExpiredPreviewRecords();
-  const record = previewRecords.get(pageRequest.request.previewReference);
-  if (record === undefined) throw new Error("Preview reference is missing or expired");
-  const request = pageRequest.request;
+function assertRecordMatchesRequest(
+  record: PreviewRecord,
+  request: Omit<BookingPreviewPageRequest["request"], "diningArea">,
+): void {
   if (
     record.restaurantId !== request.restaurantId ||
     record.date !== request.date ||
     record.time !== request.time ||
     record.partySize !== request.partySize
-  ) {
-    throw new Error("Preview request did not match the observed availability slot");
-  }
+  ) throw new Error("Preview request did not match the observed availability slot");
   const seating = providerSeatingType(request.seatingType);
   if (
     seating === undefined ||
     (record.attributes.length > 0 &&
-      !record.attributes.some(
-        (attribute) => compactSeating(attribute) === compactSeating(seating),
-      ))
-  ) {
-    throw new Error("Preview seating did not match the observed availability slot");
-  }
+      !record.attributes.some((attribute) => compactSeating(attribute) === compactSeating(seating)))
+  ) throw new Error("Preview seating did not match the observed availability slot");
   const providerType = record.providerType.toLowerCase();
   if (request.reservationKind.kind === "standard" && providerType !== "standard") {
     throw new Error("Preview reservation type did not match the observed slot");
@@ -688,12 +725,17 @@ async function executeBookingPreview(
   }
   if (
     request.reservationKind.kind === "experience" &&
-    (providerType !== "experience" ||
-      !record.experienceIds.includes(request.reservationKind.experienceId))
-  ) {
-    throw new Error("Preview Experience did not match the observed slot");
-  }
+    (providerType !== "experience" || !record.experienceIds.includes(request.reservationKind.experienceId))
+  ) throw new Error("Preview Experience did not match the observed slot");
+}
 
+async function fetchBookingDetailsState(
+  targetWindow: ApolloWindow,
+  record: PreviewRecord,
+  request: Omit<BookingPreviewPageRequest["request"], "diningArea">,
+): Promise<unknown> {
+  const seating = providerSeatingType(request.seatingType);
+  if (seating === undefined) throw new Error("Preview seating was unsupported");
   const url = new URL("/booking/details", targetWindow.location.origin);
   url.searchParams.set("rid", record.restaurantId);
   url.searchParams.set("datetime", `${record.date}T${record.time}`);
@@ -710,25 +752,160 @@ async function executeBookingPreview(
     url.searchParams.set("st", "Experience");
     url.searchParams.set("isMandatory", "true");
   }
-
   const response = await targetWindow.fetch(url, {
     method: "GET",
     credentials: "include",
     redirect: "follow",
   });
-  if (!response.ok) {
-    throw new Error(`Booking details returned HTTP ${response.status}`);
-  }
+  if (!response.ok) throw new Error(`Booking details returned HTTP ${response.status}`);
   const responseUrl = new URL(response.url);
-  if (
-    responseUrl.origin !== targetWindow.location.origin ||
-    responseUrl.pathname !== "/booking/details"
-  ) {
+  if (responseUrl.origin !== targetWindow.location.origin || responseUrl.pathname !== "/booking/details") {
     throw new Error("Booking details redirected away from the read-only details page");
   }
-  const detailsState = extractInitialStateFromHtml(await response.text());
+  return extractInitialStateFromHtml(await response.text());
+}
+
+const diningAreaLabelKeys = [
+  "diningAreaName",
+  "diningAreaDisplayName",
+  "displayName",
+  "displayLabel",
+  "label",
+  "name",
+  "title",
+] as const;
+
+function explicitDiningAreaLabel(area: Record<string, unknown>): string | undefined {
+  for (const key of diningAreaLabelKeys) {
+    const value = area[key];
+    if (typeof value === "string") {
+      const sanitized = sanitizeDiningAreaLabel(value);
+      if (sanitized !== "") return sanitized;
+    }
+  }
+  return undefined;
+}
+
+function labelsForProviderDiningArea(root: unknown, providerId: number): readonly string[] {
+  const labels = new Set<string>();
+  const pending: Array<{ readonly value: unknown; readonly depth: number }> = [{ value: root, depth: 0 }];
+  let visited = 0;
+  while (pending.length > 0 && visited < 10_000) {
+    const current = pending.shift()!;
+    visited += 1;
+    if (current.depth > 10 || !isRecord(current.value)) continue;
+    if (Number(current.value.diningAreaId) === providerId) {
+      const label = explicitDiningAreaLabel(current.value);
+      if (label !== undefined) labels.add(label);
+    }
+    for (const child of Object.values(current.value)) {
+      if (Array.isArray(child)) {
+        for (const item of child) pending.push({ value: item, depth: current.depth + 1 });
+      } else if (isRecord(child)) {
+        pending.push({ value: child, depth: current.depth + 1 });
+      }
+    }
+  }
+  return [...labels];
+}
+
+function providerDiningAreaLabel(detailsState: unknown, area: Record<string, unknown>, providerId: number): string {
+  const direct = explicitDiningAreaLabel(area);
+  if (direct !== undefined) return direct;
+  const linked = labelsForProviderDiningArea(rootState(detailsState), providerId);
+  if (linked.length > 1) {
+    throw new Error("BOOKING_PREVIEW_DINING_AREA_CONFLICT: Provider identity had conflicting display labels");
+  }
+  if (linked[0] !== undefined) return linked[0];
+  return sanitizeDiningAreaLabel(String(area.tableCategory ?? ""));
+}
+
+export function exactDiningAreas(detailsState: unknown, expectedSeating: string): readonly ExactDiningArea[] {
+  const root = rootState(detailsState);
+  const timeSlot = isRecord(root.timeSlot) ? root.timeSlot : {};
+  const raw = Array.isArray(timeSlot.diningAreasBySeating) ? timeSlot.diningAreasBySeating : [];
+  const byId = new Map<number, ExactDiningArea>();
+  for (const [providerOrder, value] of raw.entries()) {
+    if (!isRecord(value) || !Number.isInteger(value.diningAreaId) || Number(value.diningAreaId) <= 0) continue;
+    const tableCategory = typeof value.tableCategory === "string" ? value.tableCategory : "";
+    if (compactSeating(tableCategory) !== compactSeating(expectedSeating)) continue;
+    const providerId = Number(value.diningAreaId);
+    const label = providerDiningAreaLabel(detailsState, value, providerId);
+    if (label === "") throw new Error("BOOKING_PREVIEW_DINING_AREA_UNKNOWN: Provider dining-area label was empty");
+    const candidate: ExactDiningArea = {
+      providerId,
+      tableCategory,
+      option: {
+        category: normalizeDiningAreaCategory(label),
+        label,
+        providerOrder,
+      },
+    };
+    const existing = byId.get(providerId);
+    if (existing !== undefined) {
+      if (existing.tableCategory !== candidate.tableCategory || existing.option.label !== candidate.option.label) {
+        throw new Error("BOOKING_PREVIEW_DINING_AREA_CONFLICT: Provider reused a dining-area identity inconsistently");
+      }
+      continue;
+    }
+    byId.set(providerId, candidate);
+  }
+  if (byId.size === 0) {
+    throw new Error("BOOKING_PREVIEW_DINING_AREA_UNKNOWN: Provider response contained no matching dining area");
+  }
+  return [...byId.values()];
+}
+
+async function discoverDiningAreas(
+  targetWindow: ApolloWindow,
+  pageRequest: DiningAreasPageRequest,
+): Promise<unknown> {
+  cleanExpiredPreviewRecords();
+  const base = previewRecords.get(pageRequest.request.previewReference);
+  if (base === undefined || base.exactDiningArea !== undefined) {
+    throw new Error("Base preview reference is missing, expired, or already area-bound");
+  }
+  assertRecordMatchesRequest(base, pageRequest.request);
+  const detailsState = await fetchBookingDetailsState(targetWindow, base, pageRequest.request);
+  const seating = providerSeatingType(pageRequest.request.seatingType);
+  const areas = exactDiningAreas(detailsState, seating ?? "");
+  return {
+    candidates: areas.map((exactDiningArea) => {
+      const previewReference = crypto.randomUUID();
+      previewRecords.set(previewReference, {
+        ...base,
+        expiresAt: Date.now() + PREVIEW_REFERENCE_TTL_MS,
+        exactDiningArea,
+        detailsState,
+      });
+      return { previewReference, diningArea: exactDiningArea.option };
+    }),
+  };
+}
+
+async function executeBookingPreview(
+  targetWindow: ApolloWindow,
+  pageRequest: BookingPreviewPageRequest,
+): Promise<unknown> {
+  cleanExpiredPreviewRecords();
+  const record = previewRecords.get(pageRequest.request.previewReference);
+  if (record === undefined || record.exactDiningArea === undefined) {
+    throw new Error("Exact dining-area preview reference is missing or expired");
+  }
+  const request = pageRequest.request;
+  assertRecordMatchesRequest(record, request);
+  if (canonical(record.exactDiningArea.option) !== canonical(request.diningArea)) {
+    throw new Error("Preview dining area did not match its browser-local identity");
+  }
+  const detailsState = await fetchBookingDetailsState(targetWindow, record, request);
+  const exact = exactDiningAreas(detailsState, record.exactDiningArea.tableCategory).find(
+    (area) => area.providerId === record.exactDiningArea!.providerId,
+  );
+  if (exact === undefined || canonical(exact.option) !== canonical(record.exactDiningArea.option)) {
+    throw new Error("Preview response could not re-establish the exact dining area");
+  }
   record.detailsState = detailsState;
-  return detailsState;
+  return { detailsState, selectedDiningArea: record.exactDiningArea };
 }
 
 function rootState(value: unknown): Record<string, unknown> {
@@ -736,22 +913,13 @@ function rootState(value: unknown): Record<string, unknown> {
   return isRecord(value.state) ? value.state : value;
 }
 
-function diningAreaIdFor(record: PreviewRecord, seatingType: unknown): number {
-  const root = rootState(record.detailsState);
-  const timeSlot = isRecord(root.timeSlot) ? root.timeSlot : {};
-  const expected = providerSeatingType(String(seatingType));
-  const candidates = Array.isArray(timeSlot.diningAreasBySeating)
-    ? timeSlot.diningAreasBySeating.filter(
-        (value): value is Record<string, unknown> =>
-          isRecord(value) &&
-          Number.isInteger(value.diningAreaId) &&
-          compactSeating(String(value.tableCategory ?? "")) === compactSeating(expected ?? ""),
-      )
-    : [];
-  if (candidates.length !== 1) {
-    throw new Error("BOOKING_INVARIANT_MISMATCH: Exact dining area was not established");
-  }
-  return Number(candidates[0]!.diningAreaId);
+function diningAreaIdFor(record: PreviewRecord, diningArea: unknown): number {
+  if (
+    record.exactDiningArea === undefined ||
+    !isRecord(diningArea) ||
+    canonical(record.exactDiningArea.option) !== canonical(diningArea)
+  ) throw new Error("BOOKING_INVARIANT_MISMATCH: Exact dining area was not established");
+  return record.exactDiningArea.providerId;
 }
 
 async function authorizeBooking(request: WritePageRequest): Promise<unknown> {
@@ -821,7 +989,7 @@ async function lockSlot(targetWindow: ApolloWindow, request: WritePageRequest): 
   }
   const { previewReference, record } = validateStandardIntent(request.request);
   authorization.used = true;
-  const diningAreaId = diningAreaIdFor(record, request.request.seatingType);
+  const diningAreaId = diningAreaIdFor(record, request.request.diningArea);
   const numericRestaurantId = Number(record.restaurantId);
   if (!Number.isSafeInteger(numericRestaurantId) || numericRestaurantId <= 0) {
     throw new Error("BOOKING_INVARIANT_MISMATCH: Provider restaurant ID was not a positive integer");
@@ -962,6 +1130,7 @@ async function revalidatePreparedBooking(
       time: String(request.request.time),
       partySize: Number(request.request.partySize),
       seatingType: String(request.request.seatingType),
+      diningArea: request.request.diningArea as DiningAreaOption,
       reservationKind: { kind: "standard" },
     },
   };
@@ -1076,6 +1245,7 @@ async function submitReservation(targetWindow: ApolloWindow, request: WritePageR
         startsAt: String(request.request.startsAt),
         partySize: Number(request.request.partySize),
         seatingType: String(request.request.seatingType),
+        diningArea: request.request.diningArea,
         bookedAt: new Date().toISOString(),
       },
     };
@@ -1096,6 +1266,7 @@ function respond(
   marker:
     | typeof RESPONSE_MARKER
     | typeof PREVIEW_RESPONSE_MARKER
+    | typeof DINING_AREAS_RESPONSE_MARKER
     | typeof AUTHORIZE_RESPONSE_MARKER
     | typeof LOCK_RESPONSE_MARKER
     | typeof ACK_LOCK_RESPONSE_MARKER
@@ -1155,6 +1326,18 @@ function installMessageListener(targetWindow: ApolloWindow): void {
           respond(targetWindow, responseMarker, writeRequest.id, {
             ok: false,
             error: error instanceof Error ? error.message.slice(0, 300) : "Controlled booking operation failed",
+          }),
+        );
+      return;
+    }
+    const diningAreasRequest = parseDiningAreasPageRequest(event.data);
+    if (diningAreasRequest !== undefined) {
+      void discoverDiningAreas(targetWindow, diningAreasRequest)
+        .then((result) => respond(targetWindow, DINING_AREAS_RESPONSE_MARKER, diningAreasRequest.id, { ok: true, result }))
+        .catch((error: unknown) =>
+          respond(targetWindow, DINING_AREAS_RESPONSE_MARKER, diningAreasRequest.id, {
+            ok: false,
+            error: error instanceof Error ? error.message.slice(0, 300) : "Dining-area discovery failed",
           }),
         );
       return;

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { BookingTarget } from "../../domain/booking-target.js";
 import type {
   BookingPreview,
@@ -7,10 +8,16 @@ import type { AuthenticationStatus, OpenTableReadAdapter } from "../adapter.js";
 import { AdapterFailureCategory, OpenTableAdapterError } from "../errors.js";
 import { normalizeAvailabilityObservation } from "../browser/slot-normalizer.js";
 import { normalizeBookingPreview } from "../browser/preview-normalizer.js";
+import {
+  getSlotRejectionReasons,
+  isSlotAcceptable,
+  SlotRejectionReason,
+} from "../../domain/slot-matcher.js";
 import { BridgeClientError, type OpenTableBridgeClient } from "./client.js";
 import type {
   FindSlotsResult,
   GetBookingPreviewResult,
+  ListDiningAreasResult,
 } from "./protocol.js";
 
 export interface OpenTableBridgeClientPort {
@@ -18,6 +25,7 @@ export interface OpenTableBridgeClientPort {
   close(): void;
   authenticationStatus(): Promise<AuthenticationStatus>;
   findSlots(request: FindSlotsResult["request"]): Promise<FindSlotsResult>;
+  listDiningAreas(request: ListDiningAreasResult["request"]): Promise<ListDiningAreasResult>;
   getBookingPreview(
     request: GetBookingPreviewResult["request"],
   ): Promise<GetBookingPreviewResult>;
@@ -157,7 +165,44 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
         target,
         requestedDate,
       );
-      normalizedSlots.push(...normalized.slots);
+      for (const slot of normalized.slots) {
+        const baseRejections = getSlotRejectionReasons(target, slot).filter(
+          (reason) => reason !== SlotRejectionReason.SEATING_NOT_ALLOWED,
+        );
+        if (baseRejections.length > 0 || slot.previewReference === undefined) continue;
+        let discovered: ListDiningAreasResult;
+        try {
+          discovered = await this.client.listDiningAreas({
+            baseSlotId: slot.id,
+            previewReference: slot.previewReference,
+            restaurantId: slot.restaurantId,
+            date: slot.localDate,
+            time: slot.localTime,
+            partySize: slot.partySize,
+            seatingType: slot.seatingType,
+            reservationKind: slot.reservationKind.kind === "experience"
+              ? { kind: "experience", experienceId: slot.reservationKind.experienceId }
+              : slot.reservationKind,
+          });
+        } catch (error) {
+          mapBridgeError(error);
+        }
+        for (const candidate of discovered.candidates) {
+          const digest = createHash("sha256")
+            .update(`${slot.id}|${candidate.diningArea.category}|${candidate.diningArea.label}|${candidate.diningArea.providerOrder}`)
+            .digest("hex")
+            .slice(0, 20);
+          const exactCandidate: ReservationSlot = {
+            ...slot,
+            id: `ot-area-${digest}`,
+            previewReference: candidate.previewReference,
+            diningArea: candidate.diningArea,
+          };
+          if (isSlotAcceptable(target, exactCandidate)) {
+            normalizedSlots.push(exactCandidate);
+          }
+        }
+      }
       for (const diagnostic of normalized.diagnostics) {
         this.options.onDiagnostic?.(`Unknown seating label normalized to other: ${diagnostic.label}`);
       }
@@ -184,6 +229,12 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
         "The selected slot has no current browser preview reference; find slots again",
       );
     }
+    if (slot.diningArea === undefined) {
+      throw new OpenTableAdapterError(
+        AdapterFailureCategory.INVARIANT_MISMATCH,
+        "The selected slot has no exact dining-area evidence; find slots again",
+      );
+    }
     let result: GetBookingPreviewResult;
     try {
       result = await this.client.getBookingPreview({
@@ -194,6 +245,7 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
         time: slot.localTime,
         partySize: target.partySize,
         seatingType: slot.seatingType,
+        diningArea: slot.diningArea,
         reservationKind:
           slot.reservationKind.kind === "experience"
             ? {

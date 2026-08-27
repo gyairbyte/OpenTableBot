@@ -4,6 +4,7 @@ import {
   LocalTimeSchema,
   SeatingTypeSchema,
 } from "./primitives.js";
+import { DiningAreaOptionSchema } from "./dining-area.js";
 
 export const ReservationSlotSchema = z.object({
   id: z.string().min(1),
@@ -13,6 +14,7 @@ export const ReservationSlotSchema = z.object({
   localTime: LocalTimeSchema,
   partySize: z.number().int().positive(),
   seatingType: SeatingTypeSchema,
+  diningArea: DiningAreaOptionSchema.optional(),
   previewReference: z.string().uuid().optional(),
   reservationKind: z.discriminatedUnion("kind", [
     z.strictObject({ kind: z.literal("standard") }),
@@ -100,6 +102,7 @@ export const BookingPreviewSchema = z.strictObject({
   localTime: LocalTimeSchema,
   partySize: z.number().int().positive(),
   seatingType: SeatingTypeSchema,
+  diningArea: DiningAreaOptionSchema.optional(),
   reservationKind: ReservationSlotSchema.shape.reservationKind,
   prepaid: PrepaidTermSchema,
   cancellationFee: FinancialTermSchema,
@@ -120,6 +123,7 @@ export const BookingConfirmationSchema = z.strictObject({
   startsAt: z.string().datetime({ offset: true }),
   partySize: z.number().int().positive(),
   seatingType: SeatingTypeSchema,
+  diningArea: DiningAreaOptionSchema.optional(),
   bookedAt: z.string().datetime({ offset: true }),
 });
 

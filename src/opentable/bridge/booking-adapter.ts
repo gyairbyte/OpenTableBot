@@ -44,6 +44,12 @@ function intentFor(
       "Selected slot has no current browser preview reference",
     );
   }
+  if (slot.diningArea === undefined || approvedPreview.diningArea === undefined) {
+    throw new OpenTableAdapterError(
+      AdapterFailureCategory.INVARIANT_MISMATCH,
+      "Controlled booking requires exact dining-area evidence",
+    );
+  }
   if (slot.reservationKind.kind !== "standard") {
     throw new OpenTableAdapterError(
       AdapterFailureCategory.POLICY_REJECTED,
@@ -67,6 +73,7 @@ function intentFor(
     startsAt: slot.startsAt,
     partySize: target.partySize,
     seatingType: slot.seatingType,
+    diningArea: slot.diningArea,
     reservationKind: { kind: "standard" },
     approvedPreview,
   };
@@ -178,6 +185,7 @@ export class BrowserBridgeOpenTableBookingAdapter implements OpenTableBookingAda
           time: intent.time,
           partySize: intent.partySize,
           seatingType: intent.seatingType,
+          diningArea: intent.diningArea,
           reservationKind: intent.reservationKind,
         },
         data: revalidated.data,

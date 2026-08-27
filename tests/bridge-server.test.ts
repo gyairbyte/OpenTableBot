@@ -95,6 +95,11 @@ function bookingIntent(): BookingIntent {
     startsAt: "2026-09-01T19:00:00-04:00",
     partySize: 2,
     seatingType: "standard",
+    diningArea: {
+      category: "dining-room",
+      label: "Dining Room",
+      providerOrder: 0,
+    },
     reservationKind: { kind: "standard" },
     approvedPreview: makePreview(),
   };

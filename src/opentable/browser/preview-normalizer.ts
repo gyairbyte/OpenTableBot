@@ -1,4 +1,5 @@
 import type { BookingTarget } from "../../domain/booking-target.js";
+import { sameDiningAreaOption } from "../../domain/dining-area.js";
 import {
   BookingPreviewSchema,
   type BookingPreview,
@@ -153,10 +154,11 @@ export function normalizeBookingPreview(
     request.seatingType !== slot.seatingType ||
     data.seatingType.toLowerCase().replace(/[\s_-]/gu, "") !==
       providerSeatingType(slot.seatingType).toLowerCase().replace(/[\s_-]/gu, "") ||
-    data.diningArea.tableCategory.toLowerCase().replace(/[\s_-]/gu, "") !==
-      data.seatingType.toLowerCase().replace(/[\s_-]/gu, "")
+    slot.diningArea === undefined ||
+    !sameDiningAreaOption(request.diningArea, slot.diningArea) ||
+    !sameDiningAreaOption(data.diningArea, slot.diningArea)
   ) {
-    throw invariant("Booking preview seating did not match the selected slot");
+    throw invariant("Booking preview dining area did not match the selected slot");
   }
   if (request.reservationKind.kind !== slot.reservationKind.kind) {
     throw invariant("Booking preview reservation type did not match the selected slot");
@@ -223,6 +225,7 @@ export function normalizeBookingPreview(
       localTime: slot.localTime,
       partySize: target.partySize,
       seatingType: slot.seatingType,
+      diningArea: slot.diningArea,
       reservationKind,
       prepaid: prepaidTerm(
         data.creditCardPolicyType,

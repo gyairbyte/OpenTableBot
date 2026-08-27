@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DiningAreaOptionSchema } from "../../domain/dining-area.js";
 
 const SafeTextSchema = z.string().min(1).max(2_000);
 
@@ -18,12 +19,7 @@ export const SafeBookingPreviewDataSchema = z
     depositMessage: SafeTextSchema.optional(),
     termsMessage: SafeTextSchema.optional(),
     strongAuthenticationRequired: z.boolean().optional(),
-    diningArea: z
-      .object({
-        id: z.number().int().positive(),
-        tableCategory: z.string().min(1).max(100),
-      })
-      .strict(),
+    diningArea: DiningAreaOptionSchema,
     experience: z
       .object({
         id: z.union([z.string(), z.number()]),

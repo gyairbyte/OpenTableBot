@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { BookingTargetSchema } from "../src/domain/booking-target.js";
+import {
+  BookingTargetSchema,
+  effectiveDiningAreaPolicy,
+} from "../src/domain/booking-target.js";
 import { makeTarget } from "./fixtures.js";
 
 describe("BookingTarget schema", () => {
@@ -49,5 +52,28 @@ describe("BookingTarget schema", () => {
         }),
       ).success,
     ).toBe(true);
+  });
+
+  it("defaults to ANY dining area when neither policy form is supplied", () => {
+    const target = { ...makeTarget(), allowedSeatingTypes: undefined };
+    expect(effectiveDiningAreaPolicy(target)).toEqual({
+      mode: "any",
+      selection: "provider-order",
+    });
+  });
+
+  it("maps legacy seating configuration to a deterministic ALLOW policy", () => {
+    expect(effectiveDiningAreaPolicy(makeTarget())).toEqual({
+      mode: "allow",
+      categories: ["dining-room", "outdoor"],
+      labels: [],
+      selection: "provider-order",
+    });
+  });
+
+  it("rejects conflicting legacy and generalized dining-area policies", () => {
+    expect(BookingTargetSchema.safeParse(makeTarget({
+      diningAreaPolicy: { mode: "any", selection: "provider-order" },
+    })).success).toBe(false);
   });
 });

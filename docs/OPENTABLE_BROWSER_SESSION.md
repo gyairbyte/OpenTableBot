@@ -74,9 +74,13 @@ After `opentable:slots` has produced a current slot, run the
 contains a random ten-minute browser-local reference; provider slot hashes and
 availability tokens remain in MAIN-world memory.
 
-The preview reference can perform only a credentialed same-origin
+The base preview reference can perform only a credentialed same-origin
 `GET /booking/details` for the exact observed restaurant, date, time, party,
-seating, and Experience. The response is read as text and its JSON state is
+seating, and Experience. Chrome enumerates provider dining areas from that
+response in provider order and creates one opaque reference per exact provider
+identity. Node receives only category, sanitized label, provider order, and the
+opaque reference—never the provider dining-area ID. A candidate reference can
+repeat the same fixed GET and must re-establish that exact identity. The response is read as text and its JSON state is
 allowlisted before Node receives it. The extension never navigates to or
 executes the checkout page, and it contains no
 `BookDetailsStandardSlotLock`, `BookDetailsExperienceSlotLock`, or
@@ -86,6 +90,11 @@ The dry-run output may reject because currency, payment requirements, or SCA
 are unknown. That is intentional fail-closed behavior. Saved cards, account
 profile fields, card identifiers, payment tokens, cookies, authorization
 headers, and the query-bearing booking-details URL are never returned to Node.
+
+Dining-area policy defaults to `ANY` with provider-order selection. Unknown
+labels remain usable under `ANY`, while `ALLOW` and `PREFER` provide explicit
+category/label control. Standard/Experience authorization remains separate.
+Candidate selection previews options in deterministic order and never locks.
 
 ## Recovery and revocation
 

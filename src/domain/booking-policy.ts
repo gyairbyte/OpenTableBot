@@ -1,5 +1,10 @@
 import { z } from "zod";
-import type { BookingTarget } from "./booking-target.js";
+import { effectiveDiningAreaPolicy, type BookingTarget } from "./booking-target.js";
+import {
+  isDiningAreaAllowed,
+  legacySeatingCategory,
+  sameDiningAreaOption,
+} from "./dining-area.js";
 import type { BookingPreview } from "./reservation-slot.js";
 import type { ReservationSlot } from "./reservation-slot.js";
 
@@ -102,7 +107,15 @@ export function evaluateBookingPreview(
   }
   if (
     preview.seatingType !== slot.seatingType ||
-    !target.allowedSeatingTypes.includes(preview.seatingType)
+    !sameDiningAreaOption(preview.diningArea, slot.diningArea) ||
+    !isDiningAreaAllowed(
+      effectiveDiningAreaPolicy(target),
+      preview.diningArea ?? {
+        category: legacySeatingCategory(preview.seatingType),
+        label: preview.seatingType,
+        providerOrder: 0,
+      },
+    )
   ) {
     reasons.push(PolicyRejectionReason.UNEXPECTED_SEATING);
   }

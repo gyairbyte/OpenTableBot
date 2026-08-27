@@ -6,6 +6,12 @@ import {
   LocalTimeSchema,
   SeatingTypeSchema,
 } from "./primitives.js";
+import {
+  AnyDiningAreaPolicy,
+  DiningAreaPolicySchema,
+  legacySeatingCategory,
+  type DiningAreaPolicy,
+} from "./dining-area.js";
 
 export const BookingTargetModeSchema = z.enum([
   "known-drop",
@@ -32,7 +38,9 @@ export const BookingTargetSchema = z
       latest: LocalTimeSchema,
       preferred: LocalTimeSchema,
     }),
-    allowedSeatingTypes: z.array(SeatingTypeSchema).min(1),
+    /** Compatibility shorthand. New targets should use diningAreaPolicy. */
+    allowedSeatingTypes: z.array(SeatingTypeSchema).min(1).optional(),
+    diningAreaPolicy: DiningAreaPolicySchema.optional(),
     bookingPolicy: BookingPolicySchema,
     mode: BookingTargetModeSchema,
     knownReservationReleaseAt: z.string().datetime({ offset: true }).optional(),
@@ -62,13 +70,34 @@ export const BookingTargetSchema = z
         message: "Preferred time must be within the acceptable window",
       });
     }
-    if (new Set(target.allowedSeatingTypes).size !== target.allowedSeatingTypes.length) {
+    if (
+      target.allowedSeatingTypes !== undefined &&
+      new Set(target.allowedSeatingTypes).size !== target.allowedSeatingTypes.length
+    ) {
       context.addIssue({
         code: "custom",
         path: ["allowedSeatingTypes"],
         message: "Allowed seating types must be unique and ordered by preference",
       });
     }
+    if (target.allowedSeatingTypes !== undefined && target.diningAreaPolicy !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["diningAreaPolicy"],
+        message: "Use diningAreaPolicy or legacy allowedSeatingTypes, not both",
+      });
+    }
   });
 
 export type BookingTarget = z.infer<typeof BookingTargetSchema>;
+
+export function effectiveDiningAreaPolicy(target: BookingTarget): DiningAreaPolicy {
+  if (target.diningAreaPolicy !== undefined) return target.diningAreaPolicy;
+  if (target.allowedSeatingTypes === undefined) return AnyDiningAreaPolicy;
+  return {
+    mode: "allow",
+    categories: [...new Set(target.allowedSeatingTypes.map(legacySeatingCategory))],
+    labels: [],
+    selection: "provider-order",
+  };
+}

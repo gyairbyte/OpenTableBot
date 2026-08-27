@@ -3,6 +3,7 @@ import {
   DEFAULT_BRIDGE_PORT,
   DEFAULT_REQUEST_TIMEOUT_MS,
   FindSlotsRequestSchema,
+  ListDiningAreasRequestPayloadSchema,
   BookingPreviewRequestPayloadSchema,
   BookingIntentSchema,
   AuthorizeBookingResultSchema,
@@ -19,6 +20,7 @@ import {
   type AuthStatusRequest,
   type BridgeMessage,
   type FindSlotsRequest,
+  type ListDiningAreasRequest,
   type GetBookingPreviewRequest,
   type AuthorizeBookingRequest,
   type LockSlotRequest,
@@ -28,6 +30,7 @@ import {
 } from "../../src/opentable/bridge/protocol.js";
 import { SafeAvailabilityDataSchema } from "../../src/opentable/browser/availability-types.js";
 import { SafeBookingPreviewDataSchema } from "../../src/opentable/browser/preview-types.js";
+import { SafeDiningAreaCandidatesSchema } from "../../src/opentable/browser/dining-area-types.js";
 import { OpenTablePageKind } from "../../src/opentable/browser/page-classifier.js";
 import {
   ExtensionWebSocketCloseCode,
@@ -282,6 +285,42 @@ async function forwardBookingPreview(
   }
 }
 
+async function forwardListDiningAreas(message: ListDiningAreasRequest): Promise<void> {
+  const tabId = state.activeTabId;
+  if (tabId === undefined) {
+    extensionError(message.id, "PAGE_NOT_READY", "No eligible OpenTable page is available");
+    return;
+  }
+  if (Date.now() >= message.deadlineEpochMs) {
+    extensionError(message.id, "DEADLINE_EXCEEDED", "Dining-area request deadline elapsed");
+    return;
+  }
+  try {
+    const response: unknown = await chrome.tabs.sendMessage(tabId, {
+      type: "OTB_LIST_DINING_AREAS",
+      request: message.request,
+    });
+    if (!isRecord(response) || response.ok !== true || !isRecord(response.data)) {
+      const detail = isRecord(response) && typeof response.error === "string"
+        ? response.error
+        : "Dining-area discovery failed";
+      extensionError(message.id, pageFailureCode(isRecord(response) ? response.pageKind : undefined), detail);
+      return;
+    }
+    const request = ListDiningAreasRequestPayloadSchema.parse(message.request);
+    const candidates = SafeDiningAreaCandidatesSchema.parse(response.data.candidates);
+    send({
+      protocolVersion: BRIDGE_PROTOCOL_VERSION,
+      id: message.id,
+      type: "LIST_DINING_AREAS_RESULT",
+      request,
+      candidates,
+    });
+  } catch (error) {
+    extensionError(message.id, "PAGE_OPERATION_UNAVAILABLE", error instanceof Error ? error.message : "Dining-area discovery failed");
+  }
+}
+
 async function forwardControlledWrite(
   message:
     | AuthorizeBookingRequest
@@ -391,6 +430,7 @@ function handleBridgeMessage(raw: string): void {
   }
   if (message.type === "AUTH_STATUS") void forwardAuthentication(message);
   if (message.type === "FIND_SLOTS") void forwardFindSlots(message);
+  if (message.type === "LIST_DINING_AREAS") void forwardListDiningAreas(message);
   if (message.type === "GET_BOOKING_PREVIEW") void forwardBookingPreview(message);
   if (message.type === "ABANDON_LOCK_OPERATION") {
     void abandonLockOperation(message.id);

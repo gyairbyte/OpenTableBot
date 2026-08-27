@@ -15,7 +15,11 @@ function safePostLock(overrides: Record<string, unknown> = {}) {
     creditCardRequired: false,
     currencyCode: "USD",
     strongAuthenticationRequired: false,
-    diningArea: { id: 1, tableCategory: "default" },
+    diningArea: {
+      category: "dining-room" as const,
+      label: "Dining Room",
+      providerOrder: 0,
+    },
     ...overrides,
   };
 }
@@ -26,6 +30,7 @@ function clientFixture(postLockOverrides: Record<string, unknown> = {}) {
     close: vi.fn(),
     authenticationStatus: vi.fn<() => Promise<AuthenticationStatus>>().mockResolvedValue({ authenticated: true }),
     findSlots: vi.fn<() => Promise<FindSlotsResult>>(),
+    listDiningAreas: vi.fn(),
     getBookingPreview: vi.fn<() => Promise<GetBookingPreviewResult>>().mockResolvedValue({
       protocolVersion: 1,
       id: "preview-result",
@@ -38,6 +43,11 @@ function clientFixture(postLockOverrides: Record<string, unknown> = {}) {
         time: "19:00",
         partySize: 2,
         seatingType: "standard",
+        diningArea: {
+          category: "dining-room",
+          label: "Dining Room",
+          providerOrder: 0,
+        },
         reservationKind: { kind: "standard" },
       },
       data: safePostLock(),

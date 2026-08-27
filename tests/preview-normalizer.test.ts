@@ -21,6 +21,7 @@ function result(
       time: slot.localTime,
       partySize: slot.partySize,
       seatingType: slot.seatingType,
+      diningArea: slot.diningArea!,
       reservationKind:
         slot.reservationKind.kind === "experience"
           ? {
@@ -38,7 +39,7 @@ function result(
       reservationType: "Standard",
       creditCardRequired: false,
       currencyCode: "USD",
-      diningArea: { id: 10, tableCategory: "default" },
+      diningArea: slot.diningArea!,
       ...overrides,
     },
   };
@@ -255,7 +256,7 @@ describe("read-only booking preview normalization", () => {
     ["date", { reservationDateTime: "2026-09-02T19:00" }, /date/iu],
     ["time", { reservationDateTime: "2026-09-01T19:30" }, /time/iu],
     ["party size", { partySize: 4 }, /party size/iu],
-    ["seating", { seatingType: "outdoor" }, /seating/iu],
+    ["dining area", { seatingType: "outdoor" }, /dining area/iu],
   ])("fails closed for the wrong %s", (_label, override, expected) => {
     expect(() =>
       normalizeBookingPreview(result(override), makeTarget(), makeSlot()),
@@ -267,12 +268,16 @@ describe("read-only booking preview normalization", () => {
       normalizeBookingPreview(
         result({
           seatingType: "default",
-          diningArea: { id: 10, tableCategory: "outdoor" },
+          diningArea: {
+            category: "outdoor",
+            label: "Patio",
+            providerOrder: 0,
+          },
         }),
         makeTarget(),
         makeSlot(),
       ),
-    ).toThrow(/seating/iu);
+    ).toThrow(/dining area/iu);
   });
 
   it("represents an unobserved currency as unknown", () => {

@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { SafeAvailabilityDataSchema } from "../browser/availability-types.js";
 import { SafeBookingPreviewDataSchema } from "../browser/preview-types.js";
+import { SafeDiningAreaCandidatesSchema } from "../browser/dining-area-types.js";
 import { SeatingTypeSchema } from "../../domain/primitives.js";
+import { DiningAreaOptionSchema } from "../../domain/dining-area.js";
 import {
   BookingConfirmationSchema,
   BookingPreviewSchema,
@@ -172,6 +174,7 @@ export const BookingPreviewRequestPayloadSchema = z
     time: TimeSchema,
     partySize: z.number().int().positive().max(50),
     seatingType: SeatingTypeSchema,
+    diningArea: DiningAreaOptionSchema,
     reservationKind: z.discriminatedUnion("kind", [
       z.object({ kind: z.literal("standard") }).strict(),
       z
@@ -207,6 +210,34 @@ export const GetBookingPreviewResultSchema = z
   })
   .strict();
 
+export const ListDiningAreasRequestPayloadSchema = z.strictObject({
+  baseSlotId: z.string().min(1).max(200),
+  previewReference: z.string().uuid(),
+  restaurantId: z.string().min(1).max(80),
+  date: DateSchema,
+  time: TimeSchema,
+  partySize: z.number().int().positive().max(50),
+  seatingType: SeatingTypeSchema,
+  reservationKind: z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("standard") }),
+    z.strictObject({ kind: z.literal("experience"), experienceId: z.string().min(1).max(80) }),
+    z.strictObject({ kind: z.literal("unknown"), providerType: z.string().min(1).max(100) }),
+  ]),
+});
+
+export const ListDiningAreasRequestSchema = z.strictObject({
+  ...requestBaseShape,
+  type: z.literal("LIST_DINING_AREAS"),
+  request: ListDiningAreasRequestPayloadSchema,
+});
+
+export const ListDiningAreasResultSchema = z.strictObject({
+  ...baseShape,
+  type: z.literal("LIST_DINING_AREAS_RESULT"),
+  request: ListDiningAreasRequestPayloadSchema,
+  candidates: SafeDiningAreaCandidatesSchema,
+});
+
 /** Exact, provider-neutral booking intent. Provider request bodies are never accepted. */
 export const BookingIntentSchema = z
   .object({
@@ -219,6 +250,7 @@ export const BookingIntentSchema = z
     startsAt: z.string().datetime({ offset: true }),
     partySize: z.number().int().positive().max(50),
     seatingType: SeatingTypeSchema,
+    diningArea: DiningAreaOptionSchema,
     reservationKind: z.object({ kind: z.literal("standard") }).strict(),
     approvedPreview: BookingPreviewSchema,
   })
@@ -380,6 +412,8 @@ export const BridgeMessageSchema = z.discriminatedUnion("type", [
   AuthStatusResultSchema,
   FindSlotsRequestSchema,
   FindSlotsResultSchema,
+  ListDiningAreasRequestSchema,
+  ListDiningAreasResultSchema,
   GetBookingPreviewRequestSchema,
   GetBookingPreviewResultSchema,
   AuthorizeBookingRequestSchema,
@@ -408,6 +442,8 @@ export type AuthStatusRequest = z.infer<typeof AuthStatusRequestSchema>;
 export type AuthStatusResult = z.infer<typeof AuthStatusResultSchema>;
 export type FindSlotsRequest = z.infer<typeof FindSlotsRequestSchema>;
 export type FindSlotsResult = z.infer<typeof FindSlotsResultSchema>;
+export type ListDiningAreasRequest = z.infer<typeof ListDiningAreasRequestSchema>;
+export type ListDiningAreasResult = z.infer<typeof ListDiningAreasResultSchema>;
 export type GetBookingPreviewRequest = z.infer<
   typeof GetBookingPreviewRequestSchema
 >;

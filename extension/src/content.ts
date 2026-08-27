@@ -10,6 +10,7 @@ import {
 } from "../../src/opentable/browser/page-classifier.js";
 import {
   FindSlotsRequestPayloadSchema,
+  ListDiningAreasRequestPayloadSchema,
   BookingPreviewRequestPayloadSchema,
   BookingIntentSchema,
   AuthorizeBookingResultSchema,
@@ -22,13 +23,17 @@ import {
   OpenTablePageUrlSchema,
   sanitizeOpenTablePageUrl,
 } from "../../src/opentable/bridge/protocol.js";
+import { SafeDiningAreaCandidatesSchema } from "../../src/opentable/browser/dining-area-types.js";
 import { classifyInterruptedLock, type LockTelemetryStage } from "../../src/opentable/bridge/lock-lifecycle.js";
+import { DiningAreaOptionSchema } from "../../src/domain/dining-area.js";
 
 const REQUEST_MARKER = "opentablebot:availability-request";
 const RESPONSE_MARKER = "opentablebot:availability-response";
 const PAGE_TIMEOUT_MS = 15_000;
 const PREVIEW_REQUEST_MARKER = "opentablebot:booking-preview-request";
 const PREVIEW_RESPONSE_MARKER = "opentablebot:booking-preview-response";
+const DINING_AREAS_REQUEST_MARKER = "opentablebot:dining-areas-request";
+const DINING_AREAS_RESPONSE_MARKER = "opentablebot:dining-areas-response";
 const AUTHORIZE_REQUEST_MARKER = "opentablebot:authorize-booking-request";
 const AUTHORIZE_RESPONSE_MARKER = "opentablebot:authorize-booking-response";
 const LOCK_REQUEST_MARKER = "opentablebot:lock-slot-request";
@@ -47,6 +52,7 @@ interface InternalMessage {
   readonly type:
     | "OTB_AUTH_STATUS"
     | "OTB_FIND_SLOTS"
+    | "OTB_LIST_DINING_AREAS"
     | "OTB_GET_BOOKING_PREVIEW"
     | "OTB_AUTHORIZE_BOOKING"
     | "OTB_LOCK_SLOT"
@@ -233,24 +239,21 @@ function currencyCode(value: unknown): string | undefined {
     : undefined;
 }
 
-function providerSeatingType(seatingType: string): string {
-  if (seatingType === "standard") return "default";
-  if (seatingType === "high-top") return "highTop";
-  if (seatingType === "private-dining") return "privateDining";
-  return seatingType;
-}
-
-function compactProviderSeating(value: string): string {
-  return value.toLowerCase().replace(/[\s_-]/gu, "");
-}
-
 /** Project booking-details SSR state onto the only fields allowed into Node. */
 export function sanitizeBookingPreviewResult(
   value: unknown,
   request: ReturnType<typeof BookingPreviewRequestPayloadSchema.parse>,
 ): SafeBookingPreviewData {
-  if (!isRecord(value)) throw new Error("Booking details state was not an object");
-  const root = isRecord(value.state) ? value.state : value;
+  if (!isRecord(value) || !isRecord(value.detailsState) || !isRecord(value.selectedDiningArea)) {
+    throw new Error("Booking details result did not include exact dining-area evidence");
+  }
+  const selectedDiningArea = value.selectedDiningArea;
+  const selectedOption = DiningAreaOptionSchema.parse(selectedDiningArea.option);
+  if (JSON.stringify(selectedOption) !== JSON.stringify(request.diningArea)) {
+    throw new Error("BOOKING_PREVIEW_DINING_AREA_MISMATCH: Exact dining-area evidence changed");
+  }
+  const detailsState = value.detailsState;
+  const root = isRecord(detailsState.state) ? detailsState.state : detailsState;
   const restaurant = isRecord(root.restaurant) ? root.restaurant : {};
   const timeSlot = isRecord(root.timeSlot) ? root.timeSlot : {};
   const rawReservationDateTime = root.reservationDateTime;
@@ -284,7 +287,6 @@ export function sanitizeBookingPreviewResult(
   const diningAreas = Array.isArray(timeSlot.diningAreasBySeating)
     ? timeSlot.diningAreasBySeating.filter(isRecord)
     : [];
-  const expectedProviderSeating = providerSeatingType(request.seatingType);
   const validDiningAreas = diningAreas.filter(
     (area) =>
       typeof area.diningAreaId === "number" &&
@@ -297,19 +299,17 @@ export function sanitizeBookingPreviewResult(
       "BOOKING_PREVIEW_SEATING_UNKNOWN: Provider response did not independently establish seating",
     );
   }
-  const matchingDiningAreas = validDiningAreas.filter(
-    (area) =>
-      compactProviderSeating(String(area.tableCategory)) ===
-      compactProviderSeating(expectedProviderSeating),
+  const matchingDiningAreas = validDiningAreas.filter((area) =>
+    Number(area.diningAreaId) === Number(selectedDiningArea.providerId),
   );
   if (matchingDiningAreas.length === 0) {
     throw new Error(
-      "BOOKING_PREVIEW_SEATING_MISMATCH: Requested seating was absent from the provider response",
+      "BOOKING_PREVIEW_DINING_AREA_MISMATCH: Requested dining area was absent from the provider response",
     );
   }
   if (matchingDiningAreas.length > 1) {
     throw new Error(
-      "BOOKING_PREVIEW_SEATING_AMBIGUOUS: Provider response contained multiple matching dining areas",
+      "BOOKING_PREVIEW_DINING_AREA_AMBIGUOUS: Provider identity appeared more than once",
     );
   }
   const diningArea = matchingDiningAreas[0]!;
@@ -399,8 +399,7 @@ export function sanitizeBookingPreviewResult(
       ? {}
       : { strongAuthenticationRequired }),
     diningArea: {
-      id: diningArea.diningAreaId,
-      tableCategory: actualProviderSeating,
+      ...selectedOption,
     },
     ...(experience === undefined ? {} : { experience }),
   });
@@ -441,6 +440,36 @@ function queryBookingPreview(
       { marker: PREVIEW_REQUEST_MARKER, id, request },
       window.location.origin,
     );
+  });
+}
+
+function queryDiningAreas(
+  request: ReturnType<typeof ListDiningAreasRequestPayloadSchema.parse>,
+): Promise<unknown> {
+  const id = crypto.randomUUID();
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      window.removeEventListener("message", listener);
+      reject(new Error("Dining-area discovery timed out"));
+    }, PAGE_TIMEOUT_MS);
+    const listener = (event: MessageEvent<unknown>): void => {
+      if (event.source !== window || !isRecord(event.data)) return;
+      if (event.data.marker !== DINING_AREAS_RESPONSE_MARKER || event.data.id !== id) return;
+      window.clearTimeout(timer);
+      window.removeEventListener("message", listener);
+      if (event.data.ok !== true) {
+        reject(new Error(typeof event.data.error === "string" ? event.data.error : "Dining-area discovery failed"));
+        return;
+      }
+      try {
+        const result = isRecord(event.data.result) ? event.data.result.candidates : undefined;
+        resolve({ candidates: SafeDiningAreaCandidatesSchema.parse(result) });
+      } catch (error) {
+        reject(error);
+      }
+    };
+    window.addEventListener("message", listener);
+    window.postMessage({ marker: DINING_AREAS_REQUEST_MARKER, id, request }, window.location.origin);
   });
 }
 
@@ -571,6 +600,7 @@ async function revalidateControlledBooking(message: InternalMessage): Promise<un
     time: request.time,
     partySize: request.partySize,
     seatingType: request.seatingType,
+    diningArea: request.diningArea,
     reservationKind: request.reservationKind,
   });
   const result = {
@@ -621,6 +651,7 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage !== undefined) {
       !isRecord(message) ||
       (message.type !== "OTB_AUTH_STATUS" &&
         message.type !== "OTB_FIND_SLOTS" &&
+        message.type !== "OTB_LIST_DINING_AREAS" &&
         message.type !== "OTB_GET_BOOKING_PREVIEW" &&
         message.type !== "OTB_AUTHORIZE_BOOKING" &&
         message.type !== "OTB_LOCK_SLOT" &&
@@ -657,6 +688,13 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage !== undefined) {
     if (pageFailure !== undefined) {
       sendResponse(pageFailure);
       return false;
+    }
+    if (parsed.type === "OTB_LIST_DINING_AREAS") {
+      void Promise.resolve(ListDiningAreasRequestPayloadSchema.parse(parsed.request))
+        .then(queryDiningAreas)
+        .then((data) => sendResponse({ ok: true, data }))
+        .catch((error: unknown) => sendResponse(errorResponse(error)));
+      return true;
     }
     if (parsed.type === "OTB_AUTHORIZE_BOOKING") {
       void authorizeControlledBooking(parsed)

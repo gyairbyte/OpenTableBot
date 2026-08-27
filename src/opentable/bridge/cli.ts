@@ -1,8 +1,12 @@
 import { BookingTargetSchema } from "../../domain/booking-target.js";
-import type { SeatingType } from "../../domain/primitives.js";
 import type { BookingTarget } from "../../domain/booking-target.js";
 import { rankAcceptableSlots } from "../../domain/slot-matcher.js";
-import { validateBookingPreview } from "../../runner/booking-engine.js";
+import {
+  DiningAreaCategorySchema,
+  type DiningAreaPolicy,
+  type DiningAreaPreference,
+} from "../../domain/dining-area.js";
+import { selectFirstAuthorizedCandidate } from "../../runner/candidate-selection.js";
 import { OpenTableAdapterError } from "../errors.js";
 import { OpenTableBridgeClient } from "./client.js";
 import { loadCredential } from "./credential-store.js";
@@ -10,16 +14,6 @@ import { BrowserBridgeOpenTableReadAdapter } from "./read-adapter.js";
 import type { OpenTableReadAdapter } from "../adapter.js";
 import { BrowserBridgeOpenTableBookingAdapter } from "./booking-adapter.js";
 import { runControlledBooking } from "../../runner/controlled-booking.js";
-
-const allSeatingTypes: readonly SeatingType[] = [
-  "standard",
-  "outdoor",
-  "bar",
-  "counter",
-  "high-top",
-  "private-dining",
-  "other",
-];
 
 function parseFlags(args: readonly string[]): ReadonlyMap<string, string> {
   const flags = new Map<string, string>();
@@ -40,7 +34,7 @@ function parseFlags(args: readonly string[]): ReadonlyMap<string, string> {
   return flags;
 }
 
-async function selectedSlot(
+async function candidateSlots(
   adapter: OpenTableReadAdapter,
   target: BookingTarget,
   flags: ReadonlyMap<string, string>,
@@ -49,16 +43,63 @@ async function selectedSlot(
   const requestedSlotId = flags.get("slot-id");
   const requestedSeating = flags.get("seating");
   const requestedExperienceId = flags.get("experience-id");
-  const slot = slots.find(
+  const requestedAreaLabel = flags.get("dining-area-label");
+  const requestedAreaCategory = flags.get("dining-area-category");
+  const matched = slots.filter(
     (candidate) =>
       (requestedSlotId === undefined || candidate.id === requestedSlotId) &&
       (requestedSeating === undefined || candidate.seatingType === requestedSeating) &&
+      (requestedAreaLabel === undefined || candidate.diningArea?.label === requestedAreaLabel) &&
+      (requestedAreaCategory === undefined || candidate.diningArea?.category === requestedAreaCategory) &&
       (requestedExperienceId === undefined ||
         (candidate.reservationKind.kind === "experience" &&
           candidate.reservationKind.experienceId === requestedExperienceId)),
   );
-  if (slot === undefined) throw new Error("No available slot matched the selection");
-  return slot;
+  if (matched.length === 0) throw new Error("No available slot matched the selection");
+  return matched;
+}
+
+function commaList(value: string | undefined): string[] {
+  return value === undefined
+    ? []
+    : value.split(",").map((item) => item.trim()).filter((item) => item !== "");
+}
+
+function diningAreaPolicyFromFlags(flags: ReadonlyMap<string, string>): DiningAreaPolicy {
+  const mode = flags.get("dining-area-mode") ?? "any";
+  if (mode === "any") return { mode: "any", selection: "provider-order" };
+  if (mode === "allow") {
+    return {
+      mode: "allow",
+      categories: commaList(flags.get("dining-area-categories")).map((value) =>
+        DiningAreaCategorySchema.parse(value),
+      ),
+      labels: commaList(flags.get("dining-area-labels")),
+      selection: "provider-order",
+    };
+  }
+  if (mode === "prefer") {
+    const preferences: DiningAreaPreference[] = commaList(
+      flags.get("dining-area-preferences"),
+    ).map((entry) => {
+      const separator = entry.indexOf(":");
+      if (separator < 1) throw new Error("Dining-area preferences must use category:value or label:value");
+      const type = entry.slice(0, separator);
+      const value = entry.slice(separator + 1);
+      if (type === "category") {
+        return { type, value: DiningAreaCategorySchema.parse(value) };
+      }
+      if (type === "label" && value !== "") return { type, value };
+      throw new Error("Dining-area preferences must use category:value or label:value");
+    });
+    return {
+      mode: "prefer",
+      preferences,
+      fallback: flags.get("dining-area-fallback") === "none" ? "none" : "any",
+      selection: "provider-order",
+    };
+  }
+  throw new Error("--dining-area-mode must be any, allow, or prefer");
 }
 
 function requiredFlag(flags: ReadonlyMap<string, string>, name: string): string {
@@ -95,7 +136,7 @@ function targetFromFlags(flags: ReadonlyMap<string, string>): BookingTarget {
       latest: requiredFlag(flags, "latest"),
       preferred: requiredFlag(flags, "preferred"),
     },
-    allowedSeatingTypes: allSeatingTypes,
+    diningAreaPolicy: diningAreaPolicyFromFlags(flags),
     bookingPolicy: {
       allowPrepaid: booleanFlag(flags, "allow-prepaid", false),
       maxAuthorizedPrepaidCents: Number(flags.get("max-prepaid-cents") ?? "0"),
@@ -130,6 +171,9 @@ async function runSlots(
       date: slot.localDate,
       time: slot.localTime,
       seating: slot.seatingType,
+      diningAreaCategory: slot.diningArea?.category ?? "",
+      diningAreaLabel: slot.diningArea?.label ?? "",
+      providerOrder: slot.diningArea?.providerOrder ?? "",
       party: slot.partySize,
       startsAt: slot.startsAt,
       reservation: slot.reservationKind.kind,
@@ -147,9 +191,18 @@ async function runPreview(
   flags: ReadonlyMap<string, string>,
 ): Promise<void> {
   const target = targetFromFlags(flags);
-  const slot = await selectedSlot(adapter, target, flags);
-  const preview = await adapter.getBookingPreview(target, slot);
-  const policy = validateBookingPreview(target, slot, preview);
+  const selection = await selectFirstAuthorizedCandidate(
+    adapter,
+    target,
+    await candidateSlots(adapter, target, flags),
+  );
+  const selected = selection.selected;
+  if (selected === undefined) {
+    console.log(JSON.stringify({ selected: null, evaluations: selection.evaluations }, null, 2));
+    console.log("DRY RUN ONLY — NO INVENTORY WAS LOCKED AND NO RESERVATION WAS CREATED");
+    return;
+  }
+  const { slot, preview } = selected;
   console.log(
     JSON.stringify(
       {
@@ -159,6 +212,7 @@ async function runPreview(
           time: slot.localTime,
           party: slot.partySize,
           seating: slot.seatingType,
+          diningArea: slot.diningArea,
         },
         terms: {
           reservationKind: preview.reservationKind,
@@ -172,9 +226,8 @@ async function runPreview(
             ? {}
             : { summary: preview.termsSummary }),
         },
-        policy: policy.allowed
-          ? { decision: "AUTHORIZED", reasons: [] }
-          : { decision: "REJECTED", reasons: policy.reasons },
+        policy: { decision: "AUTHORIZED", reasons: [] },
+        evaluations: selection.evaluations,
       },
       null,
       2,
@@ -190,7 +243,16 @@ async function runBook(
   flags: ReadonlyMap<string, string>,
 ): Promise<void> {
   const target = targetFromFlags(flags);
-  const slot = await selectedSlot(adapter, target, flags);
+  const selection = await selectFirstAuthorizedCandidate(
+    adapter,
+    target,
+    await candidateSlots(adapter, target, flags),
+  );
+  const slot = selection.selected?.slot;
+  if (slot === undefined) {
+    console.log(JSON.stringify({ selected: null, evaluations: selection.evaluations }, null, 2));
+    throw new Error("No candidate produced an authorized read-only preview");
+  }
   const execute = flags.get("execute") === "true";
   console.log(JSON.stringify({
     exactSelection: {
@@ -200,6 +262,7 @@ async function runBook(
       startsAt: slot.startsAt,
       party: slot.partySize,
       seating: slot.seatingType,
+      diningArea: slot.diningArea,
       reservationKind: slot.reservationKind,
       slotId: slot.id,
     },
