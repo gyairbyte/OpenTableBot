@@ -29,6 +29,11 @@ import {
 import { SafeAvailabilityDataSchema } from "../../src/opentable/browser/availability-types.js";
 import { SafeBookingPreviewDataSchema } from "../../src/opentable/browser/preview-types.js";
 import { OpenTablePageKind } from "../../src/opentable/browser/page-classifier.js";
+import {
+  ExtensionWebSocketCloseCode,
+  closeAfterTransportError,
+  closeExtensionSocket,
+} from "./websocket-close-codes.js";
 
 const STORAGE_CREDENTIAL = "bridgeCredential";
 const STORAGE_PORT = "bridgePort";
@@ -369,7 +374,13 @@ function handleBridgeMessage(raw: string): void {
   try {
     message = parseBridgeMessage(raw);
   } catch {
-    state.socket?.close(1008, "Malformed bridge message");
+    if (state.socket !== undefined) {
+      closeExtensionSocket(
+        state.socket,
+        ExtensionWebSocketCloseCode.PROTOCOL_POLICY_VIOLATION,
+        "Malformed bridge message",
+      );
+    }
     return;
   }
   if (message.type === "HELLO_RESULT") {
@@ -431,7 +442,7 @@ export function connect(): void {
     activeLockOperationIds.clear();
     scheduleReconnect();
   });
-  socket.addEventListener("error", () => socket.close());
+  socket.addEventListener("error", () => closeAfterTransportError(socket));
 }
 
 async function pair(code: string, port: number): Promise<void> {
@@ -473,7 +484,7 @@ async function pair(code: string, port: number): Promise<void> {
     });
     socket.addEventListener("error", () => reject(new Error("Could not reach the local bridge")));
   });
-  socket.close(1000, "Pairing complete");
+  closeExtensionSocket(socket, ExtensionWebSocketCloseCode.NORMAL, "Pairing complete");
   connect();
 }
 

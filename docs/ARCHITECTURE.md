@@ -148,6 +148,14 @@ closed as unknown after dispatch; raw lock material is never persisted. A late
 response with no live pending Node request is discarded, while its MAIN-world
 record remains pending/unusable or is explicitly orphaned and expires naturally.
 
+Extension-initiated WebSocket closure uses browser-valid codes only: `1000` for
+normal pairing completion and private application code `4008` for malformed or
+unsupported protocol input. Node may still send standard RFC status code `1008`
+from the server side. A stopped local bridge remains an ordinary transport
+failure: the extension supplies no application close code, the existing close
+handler schedules one reconnect timer, and no authentication or lock safety is
+weakened.
+
 ## Adapter separation
 
 `OpenTableReadAdapter` exposes authentication checking, slot discovery, and
