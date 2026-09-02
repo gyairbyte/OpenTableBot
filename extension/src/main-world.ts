@@ -1,5 +1,6 @@
 import {
   BrowserPreparedState,
+  claimLockStage,
   confirmedLockDisposition,
   remainingOperationMs,
   type LockTelemetryStage,
@@ -113,6 +114,17 @@ interface PreviewRecord {
   readonly databaseRegion: string;
   readonly exactDiningArea?: ExactDiningArea;
   detailsState?: unknown;
+  exactPreviewEstablished?: true;
+}
+
+export function hasRequiredPreviewWriteState(record: {
+  readonly exactDiningArea?: unknown;
+  readonly detailsState?: unknown;
+  readonly exactPreviewEstablished?: true;
+}): boolean {
+  return record.exactDiningArea !== undefined &&
+    record.detailsState !== undefined &&
+    record.exactPreviewEstablished === true;
 }
 
 interface WritePageRequest {
@@ -151,8 +163,23 @@ export interface PreparedRecord {
 
 interface LockOperationRecord {
   readonly startedAt: number;
+  readonly emittedStages: Set<LockTelemetryStage>;
   latestStage?: LockTelemetryStage;
   abandoned: boolean;
+}
+
+export interface StandardLockRequestFields {
+  readonly restaurantId: number;
+  readonly reservationDateTime: string;
+  readonly partySize: number;
+  readonly databaseRegion: string;
+  readonly slotHash: string;
+  readonly diningAreaId: number;
+}
+
+export interface SanitizedLockHttpFailure {
+  readonly contentKind: "json" | "html" | "text" | "unknown";
+  readonly category: "application-json" | "edge-access-control" | "unclassified";
 }
 
 export type SubmissionStart =
@@ -325,7 +352,7 @@ function validateStandardIntent(intent: Record<string, unknown>): { previewRefer
   ) throw new Error("BOOKING_INVARIANT_MISMATCH: Malformed Standard booking intent");
   cleanExpiredPreviewRecords();
   const record = previewRecords.get(previewReference);
-  if (record === undefined || record.detailsState === undefined) {
+  if (record === undefined || !hasRequiredPreviewWriteState(record)) {
     throw new Error("BOOKING_AUTHORIZATION_EXPIRED: Preview reference is missing, expired, or was not previewed");
   }
   if (
@@ -744,6 +771,9 @@ async function fetchBookingDetailsState(
   url.searchParams.set("seating", seating);
   url.searchParams.set("slotHash", record.slotHash);
   url.searchParams.set("slotAvailabilityToken", record.slotAvailabilityToken);
+  if (record.exactDiningArea !== undefined) {
+    url.searchParams.set("diningAreaId", String(record.exactDiningArea.providerId));
+  }
   if (request.reservationKind.kind === "experience") {
     const experienceId = request.reservationKind.experienceId;
     url.searchParams.set("experienceIds", experienceId);
@@ -905,6 +935,7 @@ async function executeBookingPreview(
     throw new Error("Preview response could not re-establish the exact dining area");
   }
   record.detailsState = detailsState;
+  record.exactPreviewEstablished = true;
   return { detailsState, selectedDiningArea: record.exactDiningArea };
 }
 
@@ -942,6 +973,7 @@ function emitLockProgress(
   outcome?: "LOCK_NOT_DISPATCHED" | "LOCK_REJECTED" | "LOCK_CONFIRMED" | "LOCK_OUTCOME_UNKNOWN",
 ): void {
   const operation = lockOperationRecords.get(operationId);
+  if (operation !== undefined && !claimLockStage(operation.emittedStages, stage)) return;
   if (operation !== undefined) operation.latestStage = stage;
   targetWindow.postMessage({
     marker: LOCK_PROGRESS_MARKER,
@@ -950,6 +982,69 @@ function emitLockProgress(
     elapsedMs: Math.max(0, Date.now() - (operation?.startedAt ?? Date.now())),
     ...(outcome === undefined ? {} : { outcome }),
   }, targetWindow.location.origin);
+}
+
+export function buildStandardLockRequest(fields: StandardLockRequestFields): {
+  readonly headers: Readonly<Record<string, string>>;
+  readonly body: Record<string, unknown>;
+} {
+  return {
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      "ot-page-type": "network_details",
+      "ot-page-group": "booking",
+    },
+    body: {
+      operationName: "BookDetailsStandardSlotLock",
+      variables: {
+        input: {
+          restaurantId: fields.restaurantId,
+          seatingOption: "DEFAULT",
+          reservationDateTime: fields.reservationDateTime,
+          partySize: fields.partySize,
+          databaseRegion: fields.databaseRegion,
+          slotHash: fields.slotHash,
+          reservationType: "STANDARD",
+          diningAreaId: fields.diningAreaId,
+        },
+      },
+      extensions: {
+        persistedQuery: {
+          version: 1,
+          sha256Hash: "1100bf68905fd7cb1d4fd0f4504a4954aa28ec45fb22913fa977af8b06fd97fa",
+        },
+      },
+    },
+  };
+}
+
+/** Reduce a provider error to fixed enums; never return headers or response text. */
+export function classifyLockHttpFailure(
+  contentType: string | null,
+  responseText: string,
+): SanitizedLockHttpFailure {
+  const mediaType = (contentType ?? "").split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  const prefix = responseText.slice(0, 8_192).toLowerCase();
+  const contentKind = mediaType.includes("json")
+    ? "json"
+    : mediaType.includes("html") || /<!doctype\s+html|<html(?:\s|>)/u.test(prefix)
+      ? "html"
+      : mediaType.startsWith("text/")
+        ? "text"
+        : "unknown";
+  const edgeAccessControl = contentKind === "html" && (
+    prefix.includes("errors.edgesuite.net") ||
+    (prefix.includes("access denied") && prefix.includes("reference #"))
+  );
+  return {
+    contentKind,
+    category: edgeAccessControl
+      ? "edge-access-control"
+      : contentKind === "json"
+        ? "application-json"
+        : "unclassified",
+  };
 }
 
 function abandonLockOperation(operationId: string): void {
@@ -972,7 +1067,11 @@ function abandonPreparedBooking(preparedHandle: string): void {
 
 async function lockSlot(targetWindow: ApolloWindow, request: WritePageRequest): Promise<unknown> {
   const operationId = request.id;
-  lockOperationRecords.set(operationId, { startedAt: Date.now(), abandoned: false });
+  lockOperationRecords.set(operationId, {
+    startedAt: Date.now(),
+    emittedStages: new Set<LockTelemetryStage>(),
+    abandoned: false,
+  });
   emitLockProgress(targetWindow, operationId, "LOCK_REQUEST_ACCEPTED");
   emitLockProgress(targetWindow, operationId, "PAGE_OPERATION_RECEIVED");
   const deadlineEpochMs = request.deadlineEpochMs ?? Date.now();
@@ -997,6 +1096,14 @@ async function lockSlot(targetWindow: ApolloWindow, request: WritePageRequest): 
   const url = new URL("/dapi/fe/gql", targetWindow.location.origin);
   url.searchParams.set("optype", "mutation");
   url.searchParams.set("opname", "BookDetailsStandardSlotLock");
+  const providerRequest = buildStandardLockRequest({
+    restaurantId: numericRestaurantId,
+    reservationDateTime: `${record.date}T${record.time}`,
+    partySize: record.partySize,
+    databaseRegion: record.databaseRegion,
+    slotHash: record.slotHash,
+    diningAreaId,
+  });
   const controller = new AbortController();
   const abortTimer = targetWindow.setTimeout(
     () => controller.abort(),
@@ -1009,32 +1116,8 @@ async function lockSlot(targetWindow: ApolloWindow, request: WritePageRequest): 
       method: "POST",
       credentials: "include",
       signal: controller.signal,
-      headers: {
-        "content-type": "application/json",
-        "ot-page-type": "network_details",
-        "ot-page-group": "booking",
-      },
-      body: JSON.stringify({
-        operationName: "BookDetailsStandardSlotLock",
-        variables: {
-          input: {
-            restaurantId: numericRestaurantId,
-            seatingOption: "DEFAULT",
-            reservationDateTime: `${record.date}T${record.time}`,
-            partySize: record.partySize,
-            databaseRegion: record.databaseRegion,
-            slotHash: record.slotHash,
-            reservationType: "STANDARD",
-            diningAreaId,
-          },
-        },
-        extensions: {
-          persistedQuery: {
-            version: 1,
-            sha256Hash: "1100bf68905fd7cb1d4fd0f4504a4954aa28ec45fb22913fa977af8b06fd97fa",
-          },
-        },
-      }),
+      headers: providerRequest.headers,
+      body: JSON.stringify(providerRequest.body),
     });
   } catch {
     emitLockProgress(targetWindow, operationId, "PROVIDER_DISPATCHED", "LOCK_OUTCOME_UNKNOWN");
@@ -1042,10 +1125,23 @@ async function lockSlot(targetWindow: ApolloWindow, request: WritePageRequest): 
   } finally {
     targetWindow.clearTimeout(abortTimer);
   }
-  emitLockProgress(targetWindow, operationId, "PROVIDER_RESPONSE_RECEIVED");
   if (!response.ok) {
+    let diagnostic: SanitizedLockHttpFailure = {
+      contentKind: "unknown",
+      category: "unclassified",
+    };
+    try {
+      diagnostic = classifyLockHttpFailure(response.headers.get("content-type"), await response.text());
+    } catch {
+      // Diagnostics must never alter the fail-closed lock outcome.
+    }
     emitLockProgress(targetWindow, operationId, "PROVIDER_RESPONSE_RECEIVED", "LOCK_OUTCOME_UNKNOWN");
-    return { outcome: { status: "LOCK_OUTCOME_UNKNOWN", message: `Provider lock returned HTTP ${response.status} after dispatch without a definitive lock result` } };
+    return {
+      outcome: {
+        status: "LOCK_OUTCOME_UNKNOWN",
+        message: `Provider lock returned HTTP ${response.status} after dispatch without a definitive lock result (${diagnostic.contentKind}/${diagnostic.category})`,
+      },
+    };
   }
   let payload: unknown;
   try {
@@ -1068,6 +1164,7 @@ async function lockSlot(targetWindow: ApolloWindow, request: WritePageRequest): 
     emitLockProgress(targetWindow, operationId, "PROVIDER_RESPONSE_RECEIVED", "LOCK_OUTCOME_UNKNOWN");
     return { outcome: { status: "LOCK_OUTCOME_UNKNOWN", message: "Provider lock response omitted a definitive result" } };
   }
+  emitLockProgress(targetWindow, operationId, "PROVIDER_RESPONSE_RECEIVED");
   emitLockProgress(targetWindow, operationId, "LOCK_PARSED");
   const preparedHandle = crypto.randomUUID();
   const expiresAt = Date.now() + PREPARED_TTL_MS;

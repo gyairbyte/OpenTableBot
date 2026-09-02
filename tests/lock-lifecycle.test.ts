@@ -5,6 +5,7 @@ import {
   canSubmitPreparedState,
   classifyInterruptedLock,
   advanceLockStage,
+  claimLockStage,
   confirmedLockDisposition,
   remainingOperationMs,
 } from "../src/opentable/bridge/lock-lifecycle.js";
@@ -38,6 +39,14 @@ describe("lock dispatch boundary and lifecycle", () => {
         LockTelemetryStage.PAGE_OPERATION_RECEIVED,
       ),
     ).toBe(LockTelemetryStage.PROVIDER_DISPATCHED);
+  });
+
+  it("claims each semantic telemetry stage only once", () => {
+    const emitted = new Set<LockTelemetryStage>();
+    expect(claimLockStage(emitted, LockTelemetryStage.LOCK_REQUEST_ACCEPTED)).toBe(true);
+    expect(claimLockStage(emitted, LockTelemetryStage.LOCK_REQUEST_ACCEPTED)).toBe(false);
+    expect(claimLockStage(emitted, LockTelemetryStage.PROVIDER_RESPONSE_RECEIVED)).toBe(true);
+    expect(claimLockStage(emitted, LockTelemetryStage.PROVIDER_RESPONSE_RECEIVED)).toBe(false);
   });
 
   it("makes only revalidated prepared state submit-capable", () => {

@@ -341,13 +341,6 @@ async function forwardControlledWrite(
   }
   if (message.type === "LOCK_SLOT") {
     activeLockOperationIds.set(message.id, Date.now());
-    send({
-      protocolVersion: BRIDGE_PROTOCOL_VERSION,
-      id: message.id,
-      type: "LOCK_PROGRESS",
-      stage: "LOCK_REQUEST_ACCEPTED",
-      elapsedMs: 0,
-    });
   }
   try {
     const internal = message.type === "AUTHORIZE_BOOKING"

@@ -7,6 +7,9 @@ import {
   mergeAvailabilityVariables,
   exactIntentMatch,
   beginPreparedSubmission,
+  buildStandardLockRequest,
+  classifyLockHttpFailure,
+  hasRequiredPreviewWriteState,
   type PreparedRecord,
 } from "../extension/src/main-world.js";
 
@@ -214,5 +217,73 @@ describe("MAIN-world Apollo bridge", () => {
       restaurant: { restaurantId: 994474 },
       text: "brace } in string",
     });
+  });
+
+  it("builds the narrow current Standard lock request without exporting browser credentials", () => {
+    const request = buildStandardLockRequest({
+      restaurantId: 123,
+      reservationDateTime: "2026-09-18T19:00",
+      partySize: 2,
+      databaseRegion: "NA",
+      slotHash: "browser-local-slot-hash",
+      diningAreaId: 456,
+    });
+    expect(request.headers).toEqual({
+      accept: "application/json",
+      "content-type": "application/json",
+      "ot-page-type": "network_details",
+      "ot-page-group": "booking",
+    });
+    expect(request.body).toEqual({
+      operationName: "BookDetailsStandardSlotLock",
+      variables: {
+        input: {
+          restaurantId: 123,
+          seatingOption: "DEFAULT",
+          reservationDateTime: "2026-09-18T19:00",
+          partySize: 2,
+          databaseRegion: "NA",
+          slotHash: "browser-local-slot-hash",
+          reservationType: "STANDARD",
+          diningAreaId: 456,
+        },
+      },
+      extensions: {
+        persistedQuery: {
+          version: 1,
+          sha256Hash: "1100bf68905fd7cb1d4fd0f4504a4954aa28ec45fb22913fa977af8b06fd97fa",
+        },
+      },
+    });
+    expect(JSON.stringify(request)).not.toMatch(/cookie|authorization|csrf|slotAvailabilityToken/iu);
+  });
+
+  it("classifies a 403 response without retaining sensitive response text", () => {
+    const result = classifyLockHttpFailure(
+      "text/html; charset=utf-8",
+      "<html><title>Access Denied</title>Reference #18 secret-value https://errors.edgesuite.net/x</html>",
+    );
+    expect(result).toEqual({ contentKind: "html", category: "edge-access-control" });
+    expect(JSON.stringify(result)).not.toContain("secret-value");
+    expect(classifyLockHttpFailure("application/json", '{"error":"forbidden"}')).toEqual({
+      contentKind: "json",
+      category: "application-json",
+    });
+    expect(classifyLockHttpFailure(null, "forbidden")).toEqual({
+      contentKind: "unknown",
+      category: "unclassified",
+    });
+  });
+
+  it("requires an exact refreshed booking preview before write authorization", () => {
+    const discoveredArea = { providerId: 456 };
+    const detailsState = { timeSlot: { creditCardRequired: false } };
+    expect(hasRequiredPreviewWriteState({ exactDiningArea: discoveredArea, detailsState })).toBe(false);
+    expect(hasRequiredPreviewWriteState({
+      exactDiningArea: discoveredArea,
+      detailsState,
+      exactPreviewEstablished: true,
+    })).toBe(true);
+    expect(hasRequiredPreviewWriteState({ detailsState, exactPreviewEstablished: true })).toBe(false);
   });
 });

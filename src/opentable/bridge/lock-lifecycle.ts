@@ -32,6 +32,16 @@ export function advanceLockStage(
   return current;
 }
 
+/** Claim a semantic stage once so layered transports cannot duplicate it. */
+export function claimLockStage(
+  emittedStages: Set<LockTelemetryStage>,
+  stage: LockTelemetryStage,
+): boolean {
+  if (emittedStages.has(stage)) return false;
+  emittedStages.add(stage);
+  return true;
+}
+
 export type InterruptedLockOutcome = "LOCK_NOT_DISPATCHED" | "LOCK_OUTCOME_UNKNOWN";
 
 /** Only the provider-facing dispatch stage makes interruption ambiguous. */
