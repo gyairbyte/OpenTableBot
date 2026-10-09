@@ -33,6 +33,15 @@ const rateLimitedPattern = /too many requests|rate limit|try again later/i;
 const signInUrlPattern =
   /\/(?:login|sign-in|signin)(?:[/?#]|$)|\/authenticate\/start(?:[/?#]|$)/i;
 
+function isOpenTableHost(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" && parsed.hostname === "www.opentable.com";
+  } catch {
+    return false;
+  }
+}
+
 /** Pure, conservative classification of browser-visible page evidence. */
 export function classifyOpenTablePage(
   evidence: OpenTablePageEvidence,
@@ -72,6 +81,16 @@ export function classifyOpenTablePage(
     return {
       kind: OpenTablePageKind.AUTHENTICATED,
       reason: "multiple authenticated-session signals detected",
+    };
+  }
+  if (
+    isOpenTableHost(evidence.url) &&
+    evidence.authenticatedSignals.length >= 1 &&
+    evidence.unauthenticatedSignals.length === 0
+  ) {
+    return {
+      kind: OpenTablePageKind.AUTHENTICATED,
+      reason: "authenticated-session signal on OpenTable page with no unauthenticated signals",
     };
   }
   if (

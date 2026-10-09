@@ -1,0 +1,126 @@
+# Scheduling a known drop
+
+Phase 4 adds a bounded known-drop scheduler. You describe a target (restaurant,
+date, party, exact preferred time, and the release time), and the scheduler warms
+up before the release, waits for the drop, and makes exactly one attempt.
+
+## What the scheduler does and does not do
+
+- It selects **only** a slot at the target's exact `timeWindow.preferred` time.
+  If that time is absent, it pauses the target and notifies instead of taking a
+  nearby time.
+- It runs **once**. There is no post-drop retry loop.
+- Ambiguous submissions become terminal `OUTCOME_UNKNOWN` and are never retried.
+- Any challenge, sign-out, access denial, or failure pauses the target and logs it.
+- `--execute` is required for a real booking. Without it the run is a dry run.
+
+## Prerequisites
+
+- Node.js 22 and dependencies installed (`npm ci`).
+- The extension built (`npm run extension:build`) and loaded unpacked in Chrome.
+- Chrome paired to the local bridge (`npm run opentable:bridge -- pair`).
+- The machine is on and Chrome can be launched with the signed-in profile.
+- The target exists in the state file (see below).
+
+The scheduler does **not** launch Chrome. Task Scheduler does, via
+`scripts/run-scheduled.ps1`, which also opens the restaurant page so the
+extension's content scripts load and capture the page's availability operation.
+
+## Target state file
+
+Targets live in `.local/state/targets.json` (override the directory with
+`OPENTABLE_BOT_STATE_DIRECTORY`). The file is versioned and written atomically:
+
+```json
+{
+  "version": 1,
+  "records": [
+    {
+      "version": 1,
+      "createdAt": "2026-10-09T12:00:00.000Z",
+      "updatedAt": "2026-10-09T12:00:00.000Z",
+      "state": "ARMED",
+      "target": {
+        "id": "don-angie",
+        "restaurant": {
+          "id": "12345",
+          "name": "Don Angie",
+          "timeZone": "America/New_York"
+        },
+        "dateRange": { "startDate": "2026-11-08", "endDate": "2026-11-08" },
+        "partySize": 2,
+        "timeWindow": {
+          "earliest": "19:00",
+          "latest": "21:00",
+          "preferred": "19:00"
+        },
+        "diningAreaPolicy": { "mode": "any", "selection": "provider-order" },
+        "bookingPolicy": {
+          "allowPrepaid": false,
+          "maxAuthorizedPrepaidCents": 0,
+          "maxAuthorizedCancellationNoShowCents": 0,
+          "currency": "USD",
+          "allowExperiences": false,
+          "allowPaymentMethodRequired": false,
+          "autoBookAuthorized": true
+        },
+        "mode": "known-drop",
+        "knownReservationReleaseAt": "2026-11-08T10:00:00-05:00"
+      }
+    }
+  ]
+}
+```
+
+A target is runnable from state `ARMED` or `WAITING`. The scheduler ignores any
+other state, so a completed or paused target is never re-run by accident.
+
+## Running it
+
+```sh
+# Dry run against every runnable target
+npm run opentable:schedule
+
+# One target, real booking
+npm run opentable:schedule -- --target-id don-angie --execute
+```
+
+Options:
+
+- `--target-id <id>` restricts the run to one target.
+- `--execute` performs the real lock and submission.
+- `--tick-seconds <n>` polling interval while waiting for a drop (default 5).
+- `--max-runtime-minutes <n>` upper bound before exiting (default 30).
+
+The scheduler warms up 60 seconds before `knownReservationReleaseAt`, polling
+`AUTH_STATUS` until the page is ready, then waits for the release time and runs
+once.
+
+## Registering the scheduled task
+
+From an elevated PowerShell prompt, one minute of warm-up is added automatically:
+
+```powershell
+.\scripts\register-scheduled-task.ps1 `
+  -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" `
+  -DropTime "10:00" `
+  -DropDate "2026-11-08" `
+  -TargetId don-angie `
+  -Execute
+```
+
+Omit `-DropDate` for a recurring daily warm-up. The task is registered with
+`-WakeToRun` so an idle machine wakes for the drop. Remove it with
+`Unregister-ScheduledTask -TaskName OpenTableBot-Drop`.
+
+## Notifications and logs
+
+Every state change, pause, and confirmation is printed and appended as one JSON
+line to `.local/logs/notifications.log` (override with
+`OPENTABLE_BOT_LOG_DIRECTORY`). No network egress is involved.
+
+## Status
+
+The scheduler, store, and notifier are implemented and unit-tested. **No
+scheduled live write has completed yet.** Verify one supervised booking with
+`npm run opentable:book -- ... --execute` before relying on an unattended run.

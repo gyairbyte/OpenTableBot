@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export const TargetState = {
   DRAFT: "DRAFT",
   ARMED: "ARMED",
@@ -17,6 +19,19 @@ export const TargetState = {
 } as const;
 
 export type TargetState = (typeof TargetState)[keyof typeof TargetState];
+
+export const TargetStateSchema = z.enum(
+  Object.values(TargetState) as [TargetState, ...TargetState[]],
+);
+
+/**
+ * States from which the scheduler may begin a fresh run. Mid-flight states are
+ * excluded so a restart cannot silently duplicate an in-progress booking.
+ */
+export const RUNNABLE_TARGET_STATES: readonly TargetState[] = [
+  TargetState.ARMED,
+  TargetState.WAITING,
+];
 
 export const allowedTargetTransitions: Readonly<
   Record<TargetState, readonly TargetState[]>

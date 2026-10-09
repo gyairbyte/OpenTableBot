@@ -17,12 +17,24 @@ export type ControlledBookingResult =
       readonly submission: BookingSubmissionResult;
     };
 
+/** Ordered write boundaries reported to a scheduler for state tracking. */
+export type ControlledBookingStage =
+  | "locking"
+  | "locked"
+  | "revalidating"
+  | "submitting";
+
+export interface ControlledBookingOptions {
+  readonly execute: boolean;
+  readonly onStage?: (stage: ControlledBookingStage) => void | Promise<void>;
+}
+
 /** One selected slot, one explicit authorization, one lock, and at most one submit. */
 export async function runControlledBooking(
   adapter: OpenTableBookingAdapter,
   target: BookingTarget,
   slot: ReservationSlot,
-  options: { readonly execute: boolean },
+  options: ControlledBookingOptions,
 ): Promise<ControlledBookingResult> {
   const preview = await adapter.getBookingPreview(target, slot);
   const policy = evaluateBookingPreview(target, slot, preview);
@@ -34,6 +46,7 @@ export async function runControlledBooking(
     );
   }
   if (!options.execute) return { status: "dry-run", preview, policy };
+  await options.onStage?.("locking");
   const authorization = await adapter.authorizeBooking(target, slot, preview);
   const prepared = await adapter.prepareBooking(
     target,
@@ -41,6 +54,8 @@ export async function runControlledBooking(
     preview,
     authorization.authorizationHandle,
   );
+  await options.onStage?.("locked");
+  await options.onStage?.("revalidating");
   const postLockPolicy = evaluateBookingPreview(target, slot, prepared.preview);
   if (!postLockPolicy.allowed) {
     throw new OpenTableAdapterError(
@@ -48,6 +63,7 @@ export async function runControlledBooking(
       `Post-lock booking policy rejected the slot: ${postLockPolicy.reasons.join(", ")}`,
     );
   }
+  await options.onStage?.("submitting");
   const submission = await adapter.book(target, slot, prepared);
   return { status: "submitted", preview, prepared, submission };
 }

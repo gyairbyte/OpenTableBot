@@ -215,8 +215,14 @@ export class BrowserBridgeOpenTableBookingAdapter implements OpenTableBookingAda
     slot: ReservationSlot,
     preparedBooking: PreparedBooking,
   ): Promise<BookingSubmissionResult> {
-    if (Date.parse(preparedBooking.expiresAt) <= Date.now()) {
-      throw new OpenTableAdapterError(AdapterFailureCategory.LOCK_EXPIRED, "Prepared slot lock expired");
+    const expiresAtMs = Date.parse(preparedBooking.expiresAt);
+    if (Number.isNaN(expiresAtMs) || expiresAtMs <= Date.now()) {
+      throw new OpenTableAdapterError(
+        AdapterFailureCategory.LOCK_EXPIRED,
+        Number.isNaN(expiresAtMs)
+          ? "Prepared slot lock has an invalid expiry"
+          : "Prepared slot lock expired",
+      );
     }
     const intent = this.preparedIntents.get(preparedBooking.bookingHandle);
     if (intent === undefined) {

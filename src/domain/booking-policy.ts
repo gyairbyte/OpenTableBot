@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { effectiveDiningAreaPolicy, type BookingTarget } from "./booking-target.js";
+import type { BookingTarget } from "./booking-target.js";
 import {
+  effectiveDiningAreaPolicy,
   isDiningAreaAllowed,
   legacySeatingCategory,
   sameDiningAreaOption,

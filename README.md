@@ -4,7 +4,9 @@ Local-first engineering foundation for a pre-authorized restaurant reservation
 assistant. Phase 3 adds a controlled, single-shot Standard reservation path to
 the paired normal-Chrome architecture. It is dry-run by default and implements
 an explicit capability, real slot lock, post-lock terms revalidation, and one
-reservation-submission attempt. It is not a scheduler, watcher, or sniper.
+reservation-submission attempt. Phase 4 adds a bounded known-drop scheduler that
+warms up before a release time and performs exactly one attempt; see
+[docs/SCHEDULING.md](docs/SCHEDULING.md).
 
 ## Requirements
 

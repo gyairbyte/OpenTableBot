@@ -169,7 +169,18 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
         const baseRejections = getSlotRejectionReasons(target, slot).filter(
           (reason) => reason !== SlotRejectionReason.SEATING_NOT_ALLOWED,
         );
-        if (baseRejections.length > 0 || slot.previewReference === undefined) continue;
+        if (baseRejections.length > 0) {
+          this.options.onDiagnostic?.(
+            `Slot ${slot.localDate} ${slot.localTime} ${slot.seatingType} rejected before dining-area discovery: ${baseRejections.join(", ")}`,
+          );
+          continue;
+        }
+        if (slot.previewReference === undefined) {
+          this.options.onDiagnostic?.(
+            `Slot ${slot.localDate} ${slot.localTime} ${slot.seatingType} has no browser preview reference; availability operation may not have been captured`,
+          );
+          continue;
+        }
         let discovered: ListDiningAreasResult;
         try {
           discovered = await this.client.listDiningAreas({
@@ -186,6 +197,11 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
           });
         } catch (error) {
           mapBridgeError(error);
+        }
+        if (discovered.candidates.length === 0) {
+          this.options.onDiagnostic?.(
+            `Slot ${slot.localDate} ${slot.localTime} ${slot.seatingType} produced no exact dining-area candidates`,
+          );
         }
         for (const candidate of discovered.candidates) {
           const digest = createHash("sha256")

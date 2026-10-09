@@ -4,6 +4,7 @@ import {
   extractInitialStateFromHtml,
   findAvailabilityOperation,
   installAvailabilityApolloBridge,
+  installAvailabilityFetchBridge,
   mergeAvailabilityVariables,
   exactIntentMatch,
   beginPreparedSubmission,
@@ -285,5 +286,52 @@ describe("MAIN-world Apollo bridge", () => {
       exactPreviewEstablished: true,
     })).toBe(true);
     expect(hasRequiredPreviewWriteState({ detailsState, exactPreviewEstablished: true })).toBe(false);
+  });
+
+  it("prefers a captured BookDetailsStandardSlotLock operation over the hardcoded hash", async () => {
+    const capturedHash = "captured-hash-from-page";
+    const capturedUrl = "https://www.opentable.com/dapi/fe/gql?optype=mutation&opname=BookDetailsStandardSlotLock";
+    const fakeFetch = (async () =>
+      new Response(JSON.stringify({ data: { lockSlot: { success: true } } }), { status: 200 })) as typeof fetch;
+    const fakeWindow = {
+      location: { href: "https://www.opentable.com/r/some-restaurant" },
+      fetch: fakeFetch,
+      setInterval,
+      clearInterval,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    };
+    installAvailabilityFetchBridge(fakeWindow as unknown as Window);
+    await fakeWindow.fetch(capturedUrl, {
+      method: "POST",
+      body: JSON.stringify({
+        operationName: "BookDetailsStandardSlotLock",
+        variables: { input: { restaurantId: 1 } },
+        extensions: { persistedQuery: { version: 1, sha256Hash: capturedHash } },
+      }),
+    });
+    const request = buildStandardLockRequest({
+      restaurantId: 123,
+      reservationDateTime: "2026-09-18T19:00",
+      partySize: 2,
+      databaseRegion: "NA",
+      slotHash: "browser-local-slot-hash",
+      diningAreaId: 456,
+    });
+    const body = request.body as Record<string, unknown>;
+    expect(body.extensions).toEqual({
+      persistedQuery: { version: 1, sha256Hash: capturedHash },
+    });
+    const variables = body.variables as Record<string, unknown>;
+    expect(variables.input).toEqual({
+      restaurantId: 123,
+      seatingOption: "DEFAULT",
+      reservationDateTime: "2026-09-18T19:00",
+      partySize: 2,
+      databaseRegion: "NA",
+      slotHash: "browser-local-slot-hash",
+      reservationType: "STANDARD",
+      diningAreaId: 456,
+    });
   });
 });

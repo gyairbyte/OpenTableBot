@@ -9,6 +9,8 @@ import {
   AuthorizeBookingRequestSchema,
   ListDiningAreasResultSchema,
   SubmitReservationResultSchema,
+  type FindSlotsResult,
+  type GetBookingPreviewResult,
 } from "../src/opentable/bridge/protocol.js";
 import { makePreview } from "./fixtures.js";
 
@@ -48,7 +50,7 @@ describe("bridge protocol", () => {
     ).toBe("https://www.opentable.com/r/don-angie-new-york");
   });
 
-  it("rejects sensitive or unrecognized availability fields", () => {
+  it("strips sensitive or unrecognized availability fields at the boundary", () => {
     const result = {
       protocolVersion: 1,
       id: "response-id",
@@ -58,10 +60,12 @@ describe("bridge protocol", () => {
         availability: [{ restaurantId: "1", availabilityDays: [{ dayOffset: 0, slots: [{ isAvailable: true, slotHash: "secret" }] }] }],
       },
     };
-    expect(FindSlotsResultSchema.safeParse(result).success).toBe(false);
+    const parsed = FindSlotsResultSchema.safeParse(result);
+    expect(parsed.success).toBe(true);
+    expect("slotHash" in (parsed.data as FindSlotsResult).data.availability[0]!.availabilityDays[0]!.slots[0]!).toBe(false);
   });
 
-  it("rejects sensitive or unrecognized booking-preview fields", () => {
+  it("strips sensitive or unrecognized booking-preview fields at the boundary", () => {
     const result = {
       protocolVersion: 1,
       id: "preview-response",
@@ -74,6 +78,7 @@ describe("bridge protocol", () => {
         time: "19:00",
         partySize: 2,
         seatingType: "standard",
+        diningArea: { category: "dining-room", label: "Dining Room", providerOrder: 0 },
         reservationKind: { kind: "standard" },
       },
       data: {
@@ -81,10 +86,13 @@ describe("bridge protocol", () => {
         reservationDateTime: "2026-09-01T19:00",
         partySize: 2,
         seatingType: "default",
+        diningArea: { category: "dining-room", label: "Dining Room", providerOrder: 0 },
         savedCardId: "must-not-cross",
       },
     };
-    expect(GetBookingPreviewResultSchema.safeParse(result).success).toBe(false);
+    const parsed = GetBookingPreviewResultSchema.safeParse(result);
+    expect(parsed.success).toBe(true);
+    expect("savedCardId" in (parsed.data as GetBookingPreviewResult).data).toBe(false);
   });
 
   it("allows only the two narrow write capabilities and rejects arbitrary writes", () => {
@@ -137,10 +145,15 @@ describe("bridge protocol", () => {
       { providerId: 123 },
       { slotAvailabilityToken: "secret" },
     ]) {
-      expect(ListDiningAreasResultSchema.safeParse({
+      const parsed = ListDiningAreasResultSchema.safeParse({
         ...result,
         candidates: [{ ...result.candidates[0], ...injected }],
-      }).success).toBe(false);
+      });
+      expect(parsed.success).toBe(true);
+      const candidate = (parsed.data as unknown as { candidates: readonly [{ diningArea: Record<string, unknown> }] }).candidates[0];
+      for (const key of Object.keys(injected)) {
+        expect(key in candidate).toBe(false);
+      }
     }
   });
 

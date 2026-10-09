@@ -31,6 +31,7 @@ const REVALIDATE_RESPONSE_MARKER = "opentablebot:revalidate-prepared-response";
 const SUBMIT_REQUEST_MARKER = "opentablebot:submit-reservation-request";
 const SUBMIT_RESPONSE_MARKER = "opentablebot:submit-reservation-response";
 const APOLLO_OPERATION_NAME = "RestaurantsAvailability";
+const APOLLO_LOCK_OPERATION_NAME = "BookDetailsStandardSlotLock";
 const APOLLO_WRAPPED_MARKER = "__opentablebotAvailabilityWrapped";
 const FETCH_WRAPPED_MARKER = "__opentablebotAvailabilityFetchWrapped";
 
@@ -195,7 +196,23 @@ interface AvailabilityFetchTemplate {
   readonly operation: Record<string, unknown>;
 }
 
+interface LockFetchTemplate {
+  readonly url: string;
+  readonly headers: Headers;
+  readonly credentials: RequestCredentials;
+  readonly body: Record<string, unknown>;
+}
+
+interface ReservationFetchTemplate {
+  readonly url: string;
+  readonly headers: Headers;
+  readonly credentials: RequestCredentials;
+  readonly body: Record<string, unknown>;
+}
+
 const availabilityFetchTemplates: AvailabilityFetchTemplate[] = [];
+const lockFetchTemplates: LockFetchTemplate[] = [];
+const reservationFetchTemplates: ReservationFetchTemplate[] = [];
 const previewRecords = new Map<string, PreviewRecord>();
 const authorizationRecords = new Map<string, AuthorizationRecord>();
 const preparedRecords = new Map<string, PreparedRecord>();
@@ -487,6 +504,25 @@ function allowedAvailabilityUrl(rawUrl: string, targetWindow: Window): boolean {
   }
 }
 
+function findLockOperation(value: unknown): Record<string, unknown> | undefined {
+  const candidates = Array.isArray(value) ? value : [value];
+  return candidates.find(
+    (candidate): candidate is Record<string, unknown> =>
+      isRecord(candidate) && candidate.operationName === APOLLO_LOCK_OPERATION_NAME,
+  );
+}
+
+function isReservationSubmissionUrl(rawUrl: string, targetWindow: Window): boolean {
+  try {
+    const url = new URL(rawUrl, targetWindow.location.href);
+    return url.protocol === "https:" &&
+      url.hostname === "www.opentable.com" &&
+      url.pathname === "/dapi/booking/make-reservation";
+  } catch {
+    return false;
+  }
+}
+
 async function captureAvailabilityFetch(
   targetWindow: ApolloWindow,
   input: RequestInfo | URL,
@@ -515,7 +551,69 @@ async function captureAvailabilityFetch(
     operation: found.operation,
     payloadWasArray: found.payloadWasArray,
   });
-  if (availabilityFetchTemplates.length > 20) availabilityFetchTemplates.shift();
+  if (availabilityFetchTemplates.length > 20) {
+    availabilityFetchTemplates.shift();
+    console.warn("OpenTableBot: availability fetch template cache overflowed; oldest template evicted");
+  }
+}
+
+function parseRequestBodySync(init?: RequestInit): unknown | undefined {
+  if (init === undefined) return undefined;
+  if (typeof init.body === "string") {
+    try {
+      return JSON.parse(init.body) as unknown;
+    } catch {
+      return undefined;
+    }
+  }
+  if (isRecord(init.body)) return init.body;
+  return undefined;
+}
+
+async function captureWriteFetch(
+  targetWindow: ApolloWindow,
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<void> {
+  let request: Request;
+  try {
+    request = new Request(input, init);
+  } catch {
+    return;
+  }
+  if (request.method !== "POST") return;
+  const syncBody = parseRequestBodySync(init);
+  let payload: unknown;
+  if (syncBody !== undefined) {
+    payload = syncBody;
+  } else {
+    try {
+      payload = JSON.parse(await request.clone().text()) as unknown;
+    } catch {
+      // make-reservation may be form-encoded in the future; ignore parse failures for now.
+      return;
+    }
+  }
+  const lockOperation = findLockOperation(payload);
+  if (lockOperation !== undefined) {
+    lockFetchTemplates.push({
+      url: request.url,
+      headers: new Headers(request.headers),
+      credentials: request.credentials,
+      body: lockOperation,
+    });
+    if (lockFetchTemplates.length > 5) lockFetchTemplates.shift();
+    return;
+  }
+  if (!isReservationSubmissionUrl(request.url, targetWindow)) return;
+  if (!isRecord(payload)) return;
+  reservationFetchTemplates.push({
+    url: request.url,
+    headers: new Headers(request.headers),
+    credentials: request.credentials,
+    body: payload,
+  });
+  if (reservationFetchTemplates.length > 5) reservationFetchTemplates.shift();
 }
 
 function selectAvailabilityFetchTemplate(
@@ -524,17 +622,24 @@ function selectAvailabilityFetchTemplate(
   const requestedIds = Array.isArray(variables.restaurantIds)
     ? variables.restaurantIds.map(String)
     : [];
-  return availabilityFetchTemplates
+  const template = availabilityFetchTemplates
     .toReversed()
-    .find((template) => {
-      const capturedVariables = isRecord(template.operation.variables)
-        ? template.operation.variables
+    .find((candidate) => {
+      const capturedVariables = isRecord(candidate.operation.variables)
+        ? candidate.operation.variables
         : {};
       const capturedIds = Array.isArray(capturedVariables.restaurantIds)
         ? capturedVariables.restaurantIds.map(String)
         : [];
       return requestedIds.length > 0 && requestedIds.every((id) => capturedIds.includes(id));
     });
+  if (template === undefined && availabilityFetchTemplates.length > 0) {
+    console.warn(
+      `OpenTableBot: no matching availability template for restaurantIds ${requestedIds.join(",")}; ` +
+      `cache has ${availabilityFetchTemplates.length} template(s)`,
+    );
+  }
+  return template;
 }
 
 function addDaysAndMinutes(
@@ -586,6 +691,10 @@ export function attachPreviewReferences(
   const requestTime = typeof variables.time === "string" ? variables.time : undefined;
   const partySize = typeof variables.partySize === "number" ? variables.partySize : undefined;
   if (requestDate === undefined || requestTime === undefined || partySize === undefined) {
+    console.warn(
+      "OpenTableBot: cannot attach preview references; availability variables missing " +
+      `(date=${typeof variables.date}, time=${typeof variables.time}, partySize=${typeof variables.partySize})`,
+    );
     return result;
   }
   cleanExpiredPreviewRecords();
@@ -984,10 +1093,51 @@ function emitLockProgress(
   }, targetWindow.location.origin);
 }
 
+function selectLockFetchTemplate(): LockFetchTemplate | undefined {
+  return lockFetchTemplates[lockFetchTemplates.length - 1];
+}
+
 export function buildStandardLockRequest(fields: StandardLockRequestFields): {
   readonly headers: Readonly<Record<string, string>>;
   readonly body: Record<string, unknown>;
 } {
+  const captured = selectLockFetchTemplate();
+  const input = {
+    restaurantId: fields.restaurantId,
+    seatingOption: "DEFAULT",
+    reservationDateTime: fields.reservationDateTime,
+    partySize: fields.partySize,
+    databaseRegion: fields.databaseRegion,
+    slotHash: fields.slotHash,
+    reservationType: "STANDARD",
+    diningAreaId: fields.diningAreaId,
+  };
+  if (captured !== undefined) {
+    const capturedBody = structuredClone(captured.body);
+    const variables = isRecord(capturedBody.variables) ? capturedBody.variables : {};
+    const headerRecord: Record<string, string> = {};
+    try {
+      captured.headers.forEach((value, key) => {
+        headerRecord[key] = value;
+      });
+    } catch {
+      // Fall back to hardcoded headers below if Headers iteration fails.
+    }
+    return {
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        ...headerRecord,
+      },
+      body: {
+        ...capturedBody,
+        variables: {
+          ...variables,
+          input,
+        },
+      },
+    };
+  }
   return {
     headers: {
       accept: "application/json",
@@ -997,18 +1147,7 @@ export function buildStandardLockRequest(fields: StandardLockRequestFields): {
     },
     body: {
       operationName: "BookDetailsStandardSlotLock",
-      variables: {
-        input: {
-          restaurantId: fields.restaurantId,
-          seatingOption: "DEFAULT",
-          reservationDateTime: fields.reservationDateTime,
-          partySize: fields.partySize,
-          databaseRegion: fields.databaseRegion,
-          slotHash: fields.slotHash,
-          reservationType: "STANDARD",
-          diningAreaId: fields.diningAreaId,
-        },
-      },
+      variables: { input },
       extensions: {
         persistedQuery: {
           version: 1,
@@ -1093,9 +1232,14 @@ async function lockSlot(targetWindow: ApolloWindow, request: WritePageRequest): 
   if (!Number.isSafeInteger(numericRestaurantId) || numericRestaurantId <= 0) {
     throw new Error("BOOKING_INVARIANT_MISMATCH: Provider restaurant ID was not a positive integer");
   }
-  const url = new URL("/dapi/fe/gql", targetWindow.location.origin);
-  url.searchParams.set("optype", "mutation");
-  url.searchParams.set("opname", "BookDetailsStandardSlotLock");
+  const capturedLock = selectLockFetchTemplate();
+  const url = capturedLock !== undefined
+    ? new URL(capturedLock.url, targetWindow.location.href)
+    : new URL("/dapi/fe/gql", targetWindow.location.origin);
+  if (capturedLock === undefined) {
+    url.searchParams.set("optype", "mutation");
+    url.searchParams.set("opname", "BookDetailsStandardSlotLock");
+  }
   const providerRequest = buildStandardLockRequest({
     restaurantId: numericRestaurantId,
     reservationDateTime: `${record.date}T${record.time}`,
@@ -1114,7 +1258,7 @@ async function lockSlot(targetWindow: ApolloWindow, request: WritePageRequest): 
     emitLockProgress(targetWindow, operationId, "PROVIDER_DISPATCHED");
     response = await targetWindow.fetch(url, {
       method: "POST",
-      credentials: "include",
+      credentials: capturedLock?.credentials ?? "include",
       signal: controller.signal,
       headers: providerRequest.headers,
       body: JSON.stringify(providerRequest.body),
@@ -1135,11 +1279,18 @@ async function lockSlot(targetWindow: ApolloWindow, request: WritePageRequest): 
     } catch {
       // Diagnostics must never alter the fail-closed lock outcome.
     }
-    emitLockProgress(targetWindow, operationId, "PROVIDER_RESPONSE_RECEIVED", "LOCK_OUTCOME_UNKNOWN");
+    // 4xx responses that are not auth/access/rate-limit indicate the provider read and
+    // rejected the lock request, so we can treat them as a definitive rejection.
+    const definitiveRejection = response.status >= 400 && response.status < 500 &&
+      response.status !== 401 && response.status !== 403 && response.status !== 429;
+    const outcome = definitiveRejection ? "LOCK_REJECTED" : "LOCK_OUTCOME_UNKNOWN";
+    emitLockProgress(targetWindow, operationId, "PROVIDER_RESPONSE_RECEIVED", outcome);
     return {
       outcome: {
-        status: "LOCK_OUTCOME_UNKNOWN",
-        message: `Provider lock returned HTTP ${response.status} after dispatch without a definitive lock result (${diagnostic.contentKind}/${diagnostic.category})`,
+        status: outcome,
+        message: definitiveRejection
+          ? `Provider lock returned HTTP ${response.status} and rejected the request (${diagnostic.contentKind}/${diagnostic.category})`
+          : `Provider lock returned HTTP ${response.status} after dispatch without a definitive lock result (${diagnostic.contentKind}/${diagnostic.category})`,
       },
     };
   }
@@ -1269,6 +1420,22 @@ function profileFromState(value: unknown): Record<string, string> {
   return fields as Record<string, string>;
 }
 
+function selectReservationFetchTemplate(): ReservationFetchTemplate | undefined {
+  return reservationFetchTemplates[reservationFetchTemplates.length - 1];
+}
+
+function reservationHeaderRecord(headers: Headers): Record<string, string> {
+  const record: Record<string, string> = {};
+  try {
+    headers.forEach((value, key) => {
+      record[key] = value;
+    });
+  } catch {
+    // Ignore iteration failures and return what we have.
+  }
+  return record;
+}
+
 async function submitReservation(targetWindow: ApolloWindow, request: WritePageRequest): Promise<unknown> {
   const prepared = preparedRecords.get(request.preparedHandle!);
   if (prepared === undefined || !exactIntentMatch(prepared.intent, request.request)) {
@@ -1277,19 +1444,40 @@ async function submitReservation(targetWindow: ApolloWindow, request: WritePageR
   const start = beginPreparedSubmission(prepared, request.request);
   if (start.kind === "cached") return start.result;
   const { record } = validateStandardIntent(request.request);
+  const captured = selectReservationFetchTemplate();
   let dispatched = false;
   try {
-    const dashboard = await targetWindow.fetch(new URL("/user/dining-dashboard", targetWindow.location.origin), {
-      method: "GET", credentials: "include", redirect: "follow",
-    });
-    if (!dashboard.ok) throw new Error(`SUBMISSION_REJECTED: Profile returned HTTP ${dashboard.status}`);
-    const profile = profileFromState(extractInitialStateFromHtml(await dashboard.text()));
-    dispatched = true;
-    const response = await targetWindow.fetch(new URL("/dapi/booking/make-reservation", targetWindow.location.origin), {
-      method: "POST",
-      credentials: "include",
-      headers: { "content-type": "application/json", "ot-page-type": "network_details", "ot-page-group": "booking" },
-      body: JSON.stringify({
+    let profile: Record<string, string>;
+    let submissionUrl: URL;
+    let submissionHeaders: Record<string, string>;
+    let submissionCredentials: RequestCredentials;
+    let submissionBody: Record<string, unknown>;
+    if (captured !== undefined) {
+      submissionUrl = new URL(captured.url, targetWindow.location.href);
+      submissionHeaders = reservationHeaderRecord(captured.headers);
+      submissionCredentials = captured.credentials;
+      submissionBody = {
+        ...structuredClone(captured.body),
+        restaurantId: Number(record.restaurantId),
+        reservationDateTime: `${record.date}T${record.time}`,
+        partySize: record.partySize,
+        slotHash: record.slotHash,
+        slotAvailabilityToken: record.slotAvailabilityToken,
+        slotLockId: prepared.slotLockId,
+        diningAreaId: prepared.diningAreaId,
+        correlationId: prepared.correlationId,
+      };
+      profile = {};
+    } else {
+      const dashboard = await targetWindow.fetch(new URL("/user/dining-dashboard", targetWindow.location.origin), {
+        method: "GET", credentials: "include", redirect: "follow",
+      });
+      if (!dashboard.ok) throw new Error(`SUBMISSION_REJECTED: Profile returned HTTP ${dashboard.status}`);
+      profile = profileFromState(extractInitialStateFromHtml(await dashboard.text()));
+      submissionUrl = new URL("/dapi/booking/make-reservation", targetWindow.location.origin);
+      submissionHeaders = { "content-type": "application/json", "ot-page-type": "network_details", "ot-page-group": "booking" };
+      submissionCredentials = "include";
+      submissionBody = {
         restaurantId: Number(record.restaurantId),
         reservationDateTime: `${record.date}T${record.time}`,
         partySize: record.partySize,
@@ -1312,7 +1500,14 @@ async function submitReservation(targetWindow: ApolloWindow, request: WritePageR
         correlationId: prepared.correlationId,
         isModify: false,
         reservationType: "Standard",
-      }),
+      };
+    }
+    dispatched = true;
+    const response = await targetWindow.fetch(submissionUrl, {
+      method: "POST",
+      credentials: submissionCredentials,
+      headers: submissionHeaders,
+      body: JSON.stringify(submissionBody),
     });
     if (response.status >= 500) throw new Error(`Provider returned HTTP ${response.status} after dispatch`);
     const payload = (await response.json()) as unknown;
@@ -1496,6 +1691,7 @@ export function installAvailabilityFetchBridge(targetWindow: ApolloWindow = wind
   if (originalFetch[FETCH_WRAPPED_MARKER] === true) return true;
   const wrapped: MarkedFetch = (input, init) => {
     void captureAvailabilityFetch(targetWindow, input, init);
+    void captureWriteFetch(targetWindow, input, init);
     return originalFetch.call(targetWindow, input, init);
   };
   wrapped[FETCH_WRAPPED_MARKER] = true;

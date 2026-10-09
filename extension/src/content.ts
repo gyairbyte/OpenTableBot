@@ -86,6 +86,19 @@ function collectPageEvidence(): OpenTablePageEvidence {
   if (document.querySelector('[data-test="header-user-menu"]') !== null) {
     authenticatedSignals.push("authenticated-user-menu");
   }
+  if (document.querySelector('[data-test*="user" i], [data-test*="account" i]') !== null) {
+    authenticatedSignals.push("authenticated-user-data-test");
+  }
+  if (
+    document.querySelector(
+      'a[href*="/logout" i], a[href*="/signout" i], button[data-test*="signout" i]',
+    ) !== null
+  ) {
+    authenticatedSignals.push("authenticated-sign-out-control");
+  }
+  if (/sign out|log out/iu.test(bodyText)) {
+    authenticatedSignals.push("authenticated-sign-out-content");
+  }
   if (/sign in|log in/iu.test(bodyText)) unauthenticatedSignals.push("sign-in-content");
   if (
     document.querySelector(

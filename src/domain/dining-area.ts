@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { BookingTarget } from "./booking-target.js";
 import type { SeatingType } from "./primitives.js";
 
 export const DiningAreaCategorySchema = z.enum([
@@ -62,6 +63,22 @@ export const AnyDiningAreaPolicy: DiningAreaPolicy = {
   mode: "any",
   selection: "provider-order",
 };
+
+/**
+ * Resolves the effective dining-area policy for a target. Lives here rather
+ * than in booking-target.ts so booking-policy.ts can depend on it without a
+ * circular import back into the target schema.
+ */
+export function effectiveDiningAreaPolicy(target: BookingTarget): DiningAreaPolicy {
+  if (target.diningAreaPolicy !== undefined) return target.diningAreaPolicy;
+  if (target.allowedSeatingTypes === undefined) return AnyDiningAreaPolicy;
+  return {
+    mode: "allow",
+    categories: [...new Set(target.allowedSeatingTypes.map(legacySeatingCategory))],
+    labels: [],
+    selection: "provider-order",
+  };
+}
 
 export function sanitizeDiningAreaLabel(value: string): string {
   return [...value]

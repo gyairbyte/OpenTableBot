@@ -72,9 +72,19 @@ logs could not prove whether its provider request was dispatched. It was not
 retried, no submission occurred, and Stage C was not started. The deterministic
 hardening above was completed without another live write.
 
+## Phase 4: bounded known-drop scheduling (foundation implemented)
+
+- Durable, version-checked target store and a local console/file notifier
+- Single-shot engine that books only the exact preferred time and pauses otherwise
+- Warm-up readiness polling before the release time, then exactly one attempt
+- Windows Task Scheduler launch and registration scripts
+- Ambiguous submissions remain terminal `OUTCOME_UNKNOWN` and are never retried
+
+Not yet validated: no scheduled live write has completed. See
+[Scheduling](SCHEDULING.md).
+
 ## Later phases (not started)
 
-- Phase 4: bounded known-drop scheduling
 - Phase 5: durable cancellation watching
 - Phase 6: notifications and operational hardening
 

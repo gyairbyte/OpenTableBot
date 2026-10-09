@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { DiningAreaOptionSchema } from "../../domain/dining-area.js";
 
-export const SafeDiningAreaCandidateSchema = z.strictObject({
+/**
+ * Strips unknown provider fields at the parse boundary. Only the allowlisted
+ * fields below may leave Chrome.
+ */
+export const SafeDiningAreaCandidateSchema = z.object({
   previewReference: z.string().uuid(),
   diningArea: DiningAreaOptionSchema,
 });

@@ -221,6 +221,17 @@ describe("browser booking adapter", () => {
     expect(client.submitReservation).not.toHaveBeenCalled();
   });
 
+  it("rejects an invalid expiry without a submission", async () => {
+    const client = clientFixture();
+    const adapter = new BrowserBridgeOpenTableBookingAdapter(client);
+    await expect(adapter.book(makeTarget(), makeSlot(), {
+      preview: makePreview(),
+      bookingHandle: "00000000-0000-4000-8000-000000000010",
+      expiresAt: "not-a-date",
+    })).rejects.toMatchObject({ category: "LOCK_EXPIRED" });
+    expect(client.submitReservation).not.toHaveBeenCalled();
+  });
+
   it("preserves OUTCOME_UNKNOWN and performs no blind retry", async () => {
     const client = clientFixture();
     vi.mocked(client.submitReservation).mockResolvedValueOnce({

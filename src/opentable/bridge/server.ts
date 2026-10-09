@@ -225,12 +225,14 @@ export class OpenTableBridgeServer {
       send(socket, errorMessage(message.id, "MALFORMED_MESSAGE", "Request ID is already in use"));
       return;
     }
-    const delay = Math.max(1, message.deadlineEpochMs - Date.now());
-    if (delay <= 1) {
+    const remainingMs = message.deadlineEpochMs - Date.now();
+    const minimumDispatchBudgetMs = 250;
+    if (remainingMs < minimumDispatchBudgetMs) {
       const code = message.type === "LOCK_SLOT" ? "LOCK_NOT_DISPATCHED" : "DEADLINE_EXCEEDED";
       send(socket, errorMessage(message.id, code, `${code}: request deadline has elapsed`));
       return;
     }
+    const delay = remainingMs;
     const timer = setTimeout(() => {
       const pending = this.pending.get(message.id);
       this.pending.delete(message.id);

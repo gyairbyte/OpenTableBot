@@ -1,6 +1,7 @@
 import { BookingTargetSchema } from "../../domain/booking-target.js";
 import type { BookingTarget } from "../../domain/booking-target.js";
 import { rankAcceptableSlots } from "../../domain/slot-matcher.js";
+import { evaluateBookingPreview } from "../../domain/booking-policy.js";
 import {
   DiningAreaCategorySchema,
   type DiningAreaPolicy,
@@ -203,6 +204,7 @@ async function runPreview(
     return;
   }
   const { slot, preview } = selected;
+  const policy = evaluateBookingPreview(target, slot, preview);
   console.log(
     JSON.stringify(
       {
@@ -226,7 +228,9 @@ async function runPreview(
             ? {}
             : { summary: preview.termsSummary }),
         },
-        policy: { decision: "AUTHORIZED", reasons: [] },
+        policy: policy.allowed
+          ? { decision: "AUTHORIZED", reasons: [] }
+          : { decision: "REJECTED", reasons: policy.reasons },
         evaluations: selection.evaluations,
       },
       null,

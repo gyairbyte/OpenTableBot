@@ -7,10 +7,7 @@ import {
   SeatingTypeSchema,
 } from "./primitives.js";
 import {
-  AnyDiningAreaPolicy,
   DiningAreaPolicySchema,
-  legacySeatingCategory,
-  type DiningAreaPolicy,
 } from "./dining-area.js";
 
 export const BookingTargetModeSchema = z.enum([
@@ -91,13 +88,4 @@ export const BookingTargetSchema = z
 
 export type BookingTarget = z.infer<typeof BookingTargetSchema>;
 
-export function effectiveDiningAreaPolicy(target: BookingTarget): DiningAreaPolicy {
-  if (target.diningAreaPolicy !== undefined) return target.diningAreaPolicy;
-  if (target.allowedSeatingTypes === undefined) return AnyDiningAreaPolicy;
-  return {
-    mode: "allow",
-    categories: [...new Set(target.allowedSeatingTypes.map(legacySeatingCategory))],
-    labels: [],
-    selection: "provider-order",
-  };
-}
+export { effectiveDiningAreaPolicy } from "./dining-area.js";
