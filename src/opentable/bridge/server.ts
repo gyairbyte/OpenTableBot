@@ -203,6 +203,7 @@ export class OpenTableBridgeServer {
       message.type !== "AUTH_STATUS" &&
       message.type !== "FIND_SLOTS" &&
       message.type !== "LIST_DINING_AREAS" &&
+      message.type !== "SEARCH_RESTAURANTS" &&
       message.type !== "GET_BOOKING_PREVIEW" &&
       message.type !== "AUTHORIZE_BOOKING" &&
       message.type !== "LOCK_SLOT" &&
@@ -273,6 +274,7 @@ export class OpenTableBridgeServer {
       message.type !== "AUTH_STATUS_RESULT" &&
       message.type !== "FIND_SLOTS_RESULT" &&
       message.type !== "LIST_DINING_AREAS_RESULT" &&
+      message.type !== "SEARCH_RESTAURANTS_RESULT" &&
       message.type !== "GET_BOOKING_PREVIEW_RESULT" &&
       message.type !== "AUTHORIZE_BOOKING_RESULT" &&
       message.type !== "LOCK_SLOT_RESULT" &&

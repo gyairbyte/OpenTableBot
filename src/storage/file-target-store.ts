@@ -165,4 +165,19 @@ export class FileTargetStore implements TargetStore {
   async list(): Promise<readonly TargetRecord[]> {
     return [...(await this.readAll()).values()];
   }
+
+  async remove(targetId: string, expectedVersion: number): Promise<void> {
+    return this.enqueue(async () => {
+      const records = await this.readAll();
+      const existing = records.get(targetId);
+      if (existing === undefined) {
+        throw new Error(`Target ${targetId} was not found`);
+      }
+      if (existing.version !== expectedVersion) {
+        throw new TargetStoreConflictError(targetId, expectedVersion, existing.version);
+      }
+      records.delete(targetId);
+      await this.writeAll(records.values());
+    });
+  }
 }

@@ -31,6 +31,7 @@ function clientFixture(postLockOverrides: Record<string, unknown> = {}) {
     authenticationStatus: vi.fn<() => Promise<AuthenticationStatus>>().mockResolvedValue({ authenticated: true }),
     findSlots: vi.fn<() => Promise<FindSlotsResult>>(),
     listDiningAreas: vi.fn(),
+    searchRestaurants: vi.fn(),
     getBookingPreview: vi.fn<() => Promise<GetBookingPreviewResult>>().mockResolvedValue({
       protocolVersion: 1,
       id: "preview-result",

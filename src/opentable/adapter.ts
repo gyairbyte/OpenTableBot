@@ -4,6 +4,15 @@ import type {
   BookingPreview,
   ReservationSlot,
 } from "../domain/reservation-slot.js";
+import type { SafeSearchResults } from "./browser/search-types.js";
+
+/** Provider-neutral restaurant search query. */
+export interface RestaurantSearchQuery {
+  readonly term: string;
+  readonly date?: string | undefined;
+  readonly time?: string | undefined;
+  readonly partySize?: number | undefined;
+}
 
 export type AuthenticationStatus =
   | { readonly authenticated: true }
@@ -45,6 +54,8 @@ export interface OpenTableReadAdapter {
     target: BookingTarget,
     slot: ReservationSlot,
   ): Promise<BookingPreview>;
+  /** Search restaurants through the paired browser session, when supported. */
+  searchRestaurants?(query: RestaurantSearchQuery): Promise<SafeSearchResults>;
   close?(): Promise<void>;
 }
 

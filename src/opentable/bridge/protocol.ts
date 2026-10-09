@@ -2,6 +2,7 @@ import { z } from "zod";
 import { SafeAvailabilityDataSchema } from "../browser/availability-types.js";
 import { SafeBookingPreviewDataSchema } from "../browser/preview-types.js";
 import { SafeDiningAreaCandidatesSchema } from "../browser/dining-area-types.js";
+import { SafeSearchResultsSchema } from "../browser/search-types.js";
 import { SeatingTypeSchema } from "../../domain/primitives.js";
 import { DiningAreaOptionSchema } from "../../domain/dining-area.js";
 import {
@@ -238,6 +239,26 @@ export const ListDiningAreasResultSchema = z.strictObject({
   candidates: SafeDiningAreaCandidatesSchema,
 });
 
+export const SearchRestaurantsRequestPayloadSchema = z.strictObject({
+  term: z.string().min(1).max(200),
+  date: DateSchema.optional(),
+  time: TimeSchema.optional(),
+  partySize: z.number().int().positive().max(50).optional(),
+});
+
+export const SearchRestaurantsRequestSchema = z.strictObject({
+  ...requestBaseShape,
+  type: z.literal("SEARCH_RESTAURANTS"),
+  request: SearchRestaurantsRequestPayloadSchema,
+});
+
+export const SearchRestaurantsResultSchema = z.strictObject({
+  ...baseShape,
+  type: z.literal("SEARCH_RESTAURANTS_RESULT"),
+  request: SearchRestaurantsRequestPayloadSchema,
+  data: SafeSearchResultsSchema,
+});
+
 /** Exact, provider-neutral booking intent. Provider request bodies are never accepted. */
 export const BookingIntentSchema = z
   .object({
@@ -414,6 +435,8 @@ export const BridgeMessageSchema = z.discriminatedUnion("type", [
   FindSlotsResultSchema,
   ListDiningAreasRequestSchema,
   ListDiningAreasResultSchema,
+  SearchRestaurantsRequestSchema,
+  SearchRestaurantsResultSchema,
   GetBookingPreviewRequestSchema,
   GetBookingPreviewResultSchema,
   AuthorizeBookingRequestSchema,
@@ -444,6 +467,8 @@ export type FindSlotsRequest = z.infer<typeof FindSlotsRequestSchema>;
 export type FindSlotsResult = z.infer<typeof FindSlotsResultSchema>;
 export type ListDiningAreasRequest = z.infer<typeof ListDiningAreasRequestSchema>;
 export type ListDiningAreasResult = z.infer<typeof ListDiningAreasResultSchema>;
+export type SearchRestaurantsRequest = z.infer<typeof SearchRestaurantsRequestSchema>;
+export type SearchRestaurantsResult = z.infer<typeof SearchRestaurantsResultSchema>;
 export type GetBookingPreviewRequest = z.infer<
   typeof GetBookingPreviewRequestSchema
 >;

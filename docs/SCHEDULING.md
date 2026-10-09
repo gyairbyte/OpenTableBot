@@ -96,6 +96,42 @@ The scheduler warms up 60 seconds before `knownReservationReleaseAt`, polling
 `AUTH_STATUS` until the page is ready, then waits for the release time and runs
 once.
 
+## Operator console
+
+`npm run opentable:ui` starts a loopback HTTP console on
+`http://127.0.0.1:8790` that drives the same store, engine, and scheduler as the
+CLI. It accepts the same flags as the scheduler for `--tick-seconds` and
+`--execute`, plus `--port <n>`.
+
+```sh
+# Dry-run console on the default port
+npm run opentable:ui
+
+# Write-enabled console on a different port
+npm run opentable:ui -- --port 8891 --execute
+```
+
+The console lets you:
+
+- search restaurants through the paired Chrome tab and copy a result into the
+  task form (the search is a read-only page request; no provider internals or
+  page state leave Chrome, only the bounded fields in `SafeSearchResults`);
+- create a task from the same `BookingTarget` fields the state file uses,
+  including the dining-area policy, the fail-closed booking policy, and
+  `knownReservationReleaseAt`, saved as `DRAFT` or `ARMED`;
+- arm, pause, and delete tasks, each guarded by the stored record version so a
+  concurrent scheduler write cannot be clobbered;
+- watch bridge reachability, session authentication, the booking mode, and the
+  last scheduler pass.
+
+The embedded scheduler ticks on the same interval as the CLI and never overlaps
+passes. Mode is fixed when the process starts: a dry-run console cannot submit a
+reservation, so restart with `--execute` to enable controlled writes.
+
+The server binds to `127.0.0.1` only, mutations must be same-origin JSON
+requests (so a cross-site HTML form cannot reach them), and nothing is exposed
+beyond the loopback socket.
+
 ## Registering the scheduled task
 
 From an elevated PowerShell prompt, one minute of warm-up is added automatically:

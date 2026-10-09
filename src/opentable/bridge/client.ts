@@ -10,6 +10,7 @@ import {
   type ErrorMessage,
   type FindSlotsResult,
   type ListDiningAreasResult,
+  type SearchRestaurantsResult,
   type GetBookingPreviewResult,
   type BookingIntent,
   type AuthorizeBookingResult,
@@ -38,6 +39,7 @@ type ControllerRequestBody =
   | { readonly type: "AUTH_STATUS" }
   | { readonly type: "FIND_SLOTS"; readonly request: FindSlotsResult["request"] }
   | { readonly type: "LIST_DINING_AREAS"; readonly request: ListDiningAreasResult["request"] }
+  | { readonly type: "SEARCH_RESTAURANTS"; readonly request: SearchRestaurantsResult["request"] }
   | { readonly type: "GET_BOOKING_PREVIEW"; readonly request: GetBookingPreviewResult["request"] }
   | { readonly type: "AUTHORIZE_BOOKING"; readonly request: BookingIntent }
   | { readonly type: "LOCK_SLOT"; readonly authorizationHandle: string; readonly request: BookingIntent }
@@ -104,6 +106,16 @@ export class OpenTableBridgeClient {
     const result = await this.request({ type: "FIND_SLOTS", request });
     if (result.type !== "FIND_SLOTS_RESULT") {
       throw new Error("Unexpected bridge response to FIND_SLOTS");
+    }
+    return result;
+  }
+
+  async searchRestaurants(
+    request: SearchRestaurantsResult["request"],
+  ): Promise<SearchRestaurantsResult> {
+    const result = await this.request({ type: "SEARCH_RESTAURANTS", request });
+    if (result.type !== "SEARCH_RESTAURANTS_RESULT") {
+      throw new Error("Unexpected bridge response to SEARCH_RESTAURANTS");
     }
     return result;
   }

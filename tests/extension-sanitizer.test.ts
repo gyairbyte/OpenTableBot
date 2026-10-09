@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   sanitizeAvailabilityResult,
   sanitizeBookingPreviewResult,
+  sanitizeSearchResults,
 } from "../extension/src/content.js";
 import type { DiningAreaOption } from "../src/domain/dining-area.js";
 
@@ -317,5 +318,86 @@ describe("extension availability sanitizer", () => {
         standardPreviewRequest,
       ),
     ).toThrow(/BOOKING_PREVIEW_DINING_AREA_AMBIGUOUS/u);
+  });
+});
+
+function providerRestaurant(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    restaurantId: 70204,
+    name: "Catch New York",
+    urls: { profileLink: { link: "https://www.opentable.com/r/catch-new-york?ref=search" } },
+    primaryCuisine: { name: "Seafood" },
+    metro: { name: "New York" },
+    priceBand: "3",
+    type: "Restaurant",
+    ...overrides,
+  };
+}
+
+describe("sanitizeSearchResults", () => {
+  it("projects only safe fields onto the bridge payload", () => {
+    const sanitized = sanitizeSearchResults({
+      multiSearch: { restaurants: [providerRestaurant()] },
+      providerState: { secret: true },
+    });
+
+    expect(sanitized.results).toEqual([
+      {
+        restaurantId: "70204",
+        name: "Catch New York",
+        profileUrl: "https://www.opentable.com/r/catch-new-york",
+        bookable: true,
+        cuisine: "Seafood",
+        metro: "New York",
+        priceBand: "3",
+      },
+    ]);
+  });
+
+  it("drops entries without a usable identity or profile link", () => {
+    const sanitized = sanitizeSearchResults({
+      multiSearch: {
+        restaurants: [
+          providerRestaurant(),
+          providerRestaurant({
+            restaurantId: 11,
+            urls: { profileLink: { link: "https://evil.example/r/not-opentable" } },
+          }),
+          providerRestaurant({ restaurantId: 12, name: "" }),
+        ],
+      },
+    });
+
+    expect(sanitized.results.map((result) => result.restaurantId)).toEqual(["70204"]);
+  });
+
+  it("caps the result list", () => {
+    const restaurants = Array.from({ length: 40 }, (_value, index) =>
+      providerRestaurant({ restaurantId: 1_000 + index }),
+    );
+    expect(
+      sanitizeSearchResults({ multiSearch: { restaurants } }).results,
+    ).toHaveLength(30);
+  });
+
+  it("returns an empty list when the provider reports no matches", () => {
+    expect(
+      sanitizeSearchResults({ multiSearch: { restaurants: [] } }).results,
+    ).toEqual([]);
+  });
+
+  it("fails closed when the provider state shape changes", () => {
+    expect(() => sanitizeSearchResults({ searchResults: [] })).toThrow(
+      /restaurant list/u,
+    );
+  });
+
+  it("marks listing-type venues as not bookable", () => {
+    const sanitized = sanitizeSearchResults({
+      multiSearch: { restaurants: [providerRestaurant({ type: "Listing" })] },
+    });
+    expect(sanitized.results[0]?.bookable).toBe(false);
   });
 });

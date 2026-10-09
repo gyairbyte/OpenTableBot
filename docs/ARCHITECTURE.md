@@ -80,6 +80,32 @@ Readiness metadata contains only the canonical OpenTable origin and pathname.
 All URL query parameters and fragments are stripped inside Chrome so opaque
 page state cannot cross the bridge as part of a status message.
 
+## Restaurant search and operator console
+
+Search reuses the same relay as every other read. The MAIN-world bridge issues
+one fixed same-origin `GET /s` and parses `__INITIAL_STATE__` as JSON without
+executing its scripts; no write and no CSRF token is involved.
+
+```text
+search term (+ optional date, time, party)
+    -> SEARCH_RESTAURANTS (strict bridge request)
+    -> fixed same-origin GET /s
+    -> parse __INITIAL_STATE__ as JSON
+    -> in-Chrome projection onto SafeSearchResults
+    -> strict bridge schema (max 30 bounded results)
+```
+
+A sanitized result carries only restaurant ID, name, a path-only
+`www.opentable.com` profile URL, a bookable flag, and optional cuisine, metro,
+and price band. Non-OpenTable links, provider state, availability tokens, and
+unrecognized fields are dropped inside Chrome.
+
+The operator console (`src/ui`) is a loopback HTTP server that exposes search,
+version-guarded target CRUD, and scheduler status, and embeds the same
+`ReservationScheduler` tick loop the CLI runs. It adds no provider capability:
+every page interaction still travels through the bridge, and the console's
+booking mode is fixed when the process starts.
+
 ## Permission rationale
 
 - `storage`: retain the random local bridge credential and configured port.

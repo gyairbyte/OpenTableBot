@@ -12,6 +12,7 @@ import {
   AcknowledgeLockResultSchema,
   RevalidatePreparedBookingResultSchema,
   LockProgressSchema,
+  SearchRestaurantsRequestPayloadSchema,
   OpenTablePageUrlSchema,
   PairingCodeSchema,
   bridgeUrl,
@@ -21,6 +22,7 @@ import {
   type BridgeMessage,
   type FindSlotsRequest,
   type ListDiningAreasRequest,
+  type SearchRestaurantsRequest,
   type GetBookingPreviewRequest,
   type AuthorizeBookingRequest,
   type LockSlotRequest,
@@ -31,6 +33,7 @@ import {
 import { SafeAvailabilityDataSchema } from "../../src/opentable/browser/availability-types.js";
 import { SafeBookingPreviewDataSchema } from "../../src/opentable/browser/preview-types.js";
 import { SafeDiningAreaCandidatesSchema } from "../../src/opentable/browser/dining-area-types.js";
+import { SafeSearchResultsSchema } from "../../src/opentable/browser/search-types.js";
 import { OpenTablePageKind } from "../../src/opentable/browser/page-classifier.js";
 import {
   ExtensionWebSocketCloseCode,
@@ -259,6 +262,44 @@ async function forwardFindSlots(message: FindSlotsRequest): Promise<void> {
   }
 }
 
+async function forwardSearchRestaurants(message: SearchRestaurantsRequest): Promise<void> {
+  const tabId = state.activeTabId;
+  if (tabId === undefined) {
+    extensionError(message.id, "PAGE_NOT_READY", "No eligible OpenTable page is available");
+    return;
+  }
+  if (Date.now() >= message.deadlineEpochMs) {
+    extensionError(message.id, "DEADLINE_EXCEEDED", "Restaurant search request deadline elapsed");
+    return;
+  }
+  try {
+    const response: unknown = await chrome.tabs.sendMessage(tabId, {
+      type: "OTB_SEARCH_RESTAURANTS",
+      request: message.request,
+    });
+    if (!isRecord(response) || response.ok !== true) {
+      const detail = isRecord(response) && typeof response.error === "string" ? response.error : "Restaurant search failed";
+      extensionError(message.id, pageFailureCode(isRecord(response) ? response.pageKind : undefined), detail);
+      return;
+    }
+    const request = SearchRestaurantsRequestPayloadSchema.safeParse(message.request);
+    const data = SafeSearchResultsSchema.safeParse(isRecord(response) ? response.data : undefined);
+    if (!request.success || !data.success) {
+      extensionError(message.id, "PAGE_OPERATION_UNAVAILABLE", "Restaurant search response failed validation");
+      return;
+    }
+    send({
+      protocolVersion: BRIDGE_PROTOCOL_VERSION,
+      id: message.id,
+      type: "SEARCH_RESTAURANTS_RESULT",
+      request: request.data,
+      data: data.data,
+    });
+  } catch (error) {
+    extensionError(message.id, "PAGE_OPERATION_UNAVAILABLE", error instanceof Error ? error.message : "Restaurant search failed");
+  }
+}
+
 async function forwardBookingPreview(
   message: GetBookingPreviewRequest,
 ): Promise<void> {
@@ -455,6 +496,7 @@ function handleBridgeMessage(raw: string): void {
   if (message.type === "AUTH_STATUS") void forwardAuthentication(message);
   if (message.type === "FIND_SLOTS") void forwardFindSlots(message);
   if (message.type === "LIST_DINING_AREAS") void forwardListDiningAreas(message);
+  if (message.type === "SEARCH_RESTAURANTS") void forwardSearchRestaurants(message);
   if (message.type === "GET_BOOKING_PREVIEW") void forwardBookingPreview(message);
   if (message.type === "ABANDON_LOCK_OPERATION") {
     void abandonLockOperation(message.id);

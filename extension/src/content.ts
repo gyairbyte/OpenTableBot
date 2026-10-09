@@ -19,11 +19,13 @@ import {
   AcknowledgeLockResultSchema,
   RevalidatePreparedBookingResultSchema,
   LockProgressSchema,
+  SearchRestaurantsRequestPayloadSchema,
   BRIDGE_PROTOCOL_VERSION,
   OpenTablePageUrlSchema,
   sanitizeOpenTablePageUrl,
 } from "../../src/opentable/bridge/protocol.js";
 import { SafeDiningAreaCandidatesSchema } from "../../src/opentable/browser/dining-area-types.js";
+import { SafeSearchResultsSchema, type SafeSearchResults } from "../../src/opentable/browser/search-types.js";
 import { classifyInterruptedLock, type LockTelemetryStage } from "../../src/opentable/bridge/lock-lifecycle.js";
 import { DiningAreaOptionSchema } from "../../src/domain/dining-area.js";
 
@@ -34,6 +36,8 @@ const PREVIEW_REQUEST_MARKER = "opentablebot:booking-preview-request";
 const PREVIEW_RESPONSE_MARKER = "opentablebot:booking-preview-response";
 const DINING_AREAS_REQUEST_MARKER = "opentablebot:dining-areas-request";
 const DINING_AREAS_RESPONSE_MARKER = "opentablebot:dining-areas-response";
+const SEARCH_REQUEST_MARKER = "opentablebot:search-request";
+const SEARCH_RESPONSE_MARKER = "opentablebot:search-response";
 const AUTHORIZE_REQUEST_MARKER = "opentablebot:authorize-booking-request";
 const AUTHORIZE_RESPONSE_MARKER = "opentablebot:authorize-booking-response";
 const LOCK_REQUEST_MARKER = "opentablebot:lock-slot-request";
@@ -53,6 +57,7 @@ interface InternalMessage {
     | "OTB_AUTH_STATUS"
     | "OTB_FIND_SLOTS"
     | "OTB_LIST_DINING_AREAS"
+    | "OTB_SEARCH_RESTAURANTS"
     | "OTB_GET_BOOKING_PREVIEW"
     | "OTB_AUTHORIZE_BOOKING"
     | "OTB_LOCK_SLOT"
@@ -171,6 +176,71 @@ export function sanitizeAvailabilityResult(
     throw new Error("Availability response did not contain the requested restaurant");
   }
   return SafeAvailabilityDataSchema.parse({ availability: filtered });
+}
+
+/** Reduce an OpenTable profile link to an www.opentable.com path-only URL. */
+function profileLink(restaurant: Record<string, unknown>): string {
+  const urls = isRecord(restaurant.urls) ? restaurant.urls : {};
+  const profileLink = isRecord(urls.profileLink) ? urls.profileLink : {};
+  const link = typeof profileLink.link === "string" ? profileLink.link.trim() : "";
+  if (link === "") return "";
+  try {
+    const url = new URL(link, "https://www.opentable.com");
+    if (url.hostname !== "www.opentable.com") return "";
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return "";
+  }
+}
+
+/** Project the search SSR state onto the only fields allowed into Node. */
+export function sanitizeSearchResults(value: unknown): SafeSearchResults {
+  if (!isRecord(value)) throw new Error("Search result was not an object");
+  const multiSearch = isRecord(value.multiSearch) ? value.multiSearch : {};
+  const rawRestaurants = multiSearch.restaurants;
+  if (!Array.isArray(rawRestaurants)) {
+    throw new Error("Search response did not contain a restaurant list");
+  }
+  const results = rawRestaurants
+    .filter(isRecord)
+    .map((restaurant) => {
+      const restaurantId =
+        typeof restaurant.restaurantId === "number"
+          ? String(restaurant.restaurantId)
+          : typeof restaurant.restaurantId === "string"
+            ? restaurant.restaurantId
+            : "";
+      const name = plainText(restaurant.name) ?? "";
+      const cuisine =
+        isRecord(restaurant.primaryCuisine) &&
+        typeof restaurant.primaryCuisine.name === "string"
+          ? plainText(restaurant.primaryCuisine.name)
+          : undefined;
+      const metro =
+        isRecord(restaurant.metro) && typeof restaurant.metro.name === "string"
+          ? plainText(restaurant.metro.name)
+          : undefined;
+      const priceBand =
+        typeof restaurant.priceBand === "string"
+          ? plainText(restaurant.priceBand)
+          : undefined;
+      return {
+        restaurantId,
+        name,
+        profileUrl: profileLink(restaurant),
+        bookable:
+          typeof restaurant.type === "string" ? restaurant.type !== "Listing" : true,
+        ...(cuisine === undefined ? {} : { cuisine }),
+        ...(metro === undefined ? {} : { metro }),
+        ...(priceBand === undefined ? {} : { priceBand }),
+      };
+    })
+    .filter(
+      (result) =>
+        result.restaurantId !== "" && result.name !== "" && result.profileUrl !== "",
+    )
+    .slice(0, 30);
+  return SafeSearchResultsSchema.parse({ results });
 }
 
 function availabilityVariables(request: ReturnType<typeof FindSlotsRequestPayloadSchema.parse>): Record<string, unknown> {
@@ -486,6 +556,35 @@ function queryDiningAreas(
   });
 }
 
+function queryRestaurants(
+  request: ReturnType<typeof SearchRestaurantsRequestPayloadSchema.parse>,
+): Promise<SafeSearchResults> {
+  const id = crypto.randomUUID();
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      window.removeEventListener("message", listener);
+      reject(new Error("Restaurant search timed out"));
+    }, PAGE_TIMEOUT_MS);
+    const listener = (event: MessageEvent<unknown>): void => {
+      if (event.source !== window || !isRecord(event.data)) return;
+      if (event.data.marker !== SEARCH_RESPONSE_MARKER || event.data.id !== id) return;
+      window.clearTimeout(timer);
+      window.removeEventListener("message", listener);
+      if (event.data.ok !== true) {
+        reject(new Error(typeof event.data.error === "string" ? event.data.error : "Restaurant search failed"));
+        return;
+      }
+      try {
+        resolve(sanitizeSearchResults(event.data.result));
+      } catch (error) {
+        reject(error);
+      }
+    };
+    window.addEventListener("message", listener);
+    window.postMessage({ marker: SEARCH_REQUEST_MARKER, id, request }, window.location.origin);
+  });
+}
+
 function controlledPageOperation(
   requestMarker: string,
   responseMarker: string,
@@ -665,6 +764,7 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage !== undefined) {
       (message.type !== "OTB_AUTH_STATUS" &&
         message.type !== "OTB_FIND_SLOTS" &&
         message.type !== "OTB_LIST_DINING_AREAS" &&
+        message.type !== "OTB_SEARCH_RESTAURANTS" &&
         message.type !== "OTB_GET_BOOKING_PREVIEW" &&
         message.type !== "OTB_AUTHORIZE_BOOKING" &&
         message.type !== "OTB_LOCK_SLOT" &&
@@ -705,6 +805,13 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage !== undefined) {
     if (parsed.type === "OTB_LIST_DINING_AREAS") {
       void Promise.resolve(ListDiningAreasRequestPayloadSchema.parse(parsed.request))
         .then(queryDiningAreas)
+        .then((data) => sendResponse({ ok: true, data }))
+        .catch((error: unknown) => sendResponse(errorResponse(error)));
+      return true;
+    }
+    if (parsed.type === "OTB_SEARCH_RESTAURANTS") {
+      void Promise.resolve(SearchRestaurantsRequestPayloadSchema.parse(parsed.request))
+        .then(queryRestaurants)
         .then((data) => sendResponse({ ok: true, data }))
         .catch((error: unknown) => sendResponse(errorResponse(error)));
       return true;

@@ -4,10 +4,18 @@ import type {
   BookingPreview,
   ReservationSlot,
 } from "../../domain/reservation-slot.js";
-import type { AuthenticationStatus, OpenTableReadAdapter } from "../adapter.js";
+import type {
+  AuthenticationStatus,
+  OpenTableReadAdapter,
+  RestaurantSearchQuery,
+} from "../adapter.js";
 import { AdapterFailureCategory, OpenTableAdapterError } from "../errors.js";
 import { normalizeAvailabilityObservation } from "../browser/slot-normalizer.js";
 import { normalizeBookingPreview } from "../browser/preview-normalizer.js";
+import {
+  SafeSearchResultsSchema,
+  type SafeSearchResults,
+} from "../browser/search-types.js";
 import {
   getSlotRejectionReasons,
   isSlotAcceptable,
@@ -18,6 +26,7 @@ import type {
   FindSlotsResult,
   GetBookingPreviewResult,
   ListDiningAreasResult,
+  SearchRestaurantsResult,
 } from "./protocol.js";
 
 export interface OpenTableBridgeClientPort {
@@ -26,6 +35,9 @@ export interface OpenTableBridgeClientPort {
   authenticationStatus(): Promise<AuthenticationStatus>;
   findSlots(request: FindSlotsResult["request"]): Promise<FindSlotsResult>;
   listDiningAreas(request: ListDiningAreasResult["request"]): Promise<ListDiningAreasResult>;
+  searchRestaurants(
+    request: SearchRestaurantsResult["request"],
+  ): Promise<SearchRestaurantsResult>;
   getBookingPreview(
     request: GetBookingPreviewResult["request"],
   ): Promise<GetBookingPreviewResult>;
@@ -125,6 +137,22 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
     } catch (error) {
       mapBridgeError(error);
     }
+  }
+
+  async searchRestaurants(query: RestaurantSearchQuery): Promise<SafeSearchResults> {
+    const request: SearchRestaurantsResult["request"] = {
+      term: query.term,
+      ...(query.date === undefined ? {} : { date: query.date }),
+      ...(query.time === undefined ? {} : { time: query.time }),
+      ...(query.partySize === undefined ? {} : { partySize: query.partySize }),
+    };
+    let result: SearchRestaurantsResult;
+    try {
+      result = await this.client.searchRestaurants(request);
+    } catch (error) {
+      mapBridgeError(error);
+    }
+    return SafeSearchResultsSchema.parse(result.data);
   }
 
   async findSlots(target: BookingTarget): Promise<readonly ReservationSlot[]> {

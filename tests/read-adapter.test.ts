@@ -7,6 +7,7 @@ import type {
   FindSlotsResult,
   GetBookingPreviewResult,
   ListDiningAreasResult,
+  SearchRestaurantsResult,
 } from "../src/opentable/bridge/protocol.js";
 import { makeSlot, makeTarget } from "./fixtures.js";
 import { makeAvailabilityObservation } from "./opentable-fixtures.js";
@@ -63,6 +64,24 @@ class FakeBridgeClient implements OpenTableBridgeClientPort {
         previewReference: "00000000-0000-4000-8000-000000000002",
         diningArea: slot.diningArea!,
       }],
+    };
+  }
+  async searchRestaurants(): Promise<SearchRestaurantsResult> {
+    return {
+      protocolVersion: 1,
+      id: "search-response",
+      type: "SEARCH_RESTAURANTS_RESULT",
+      request: { term: "sushi" },
+      data: {
+        results: [
+          {
+            restaurantId: "70204",
+            name: "Catch New York",
+            profileUrl: "https://www.opentable.com/r/catch-new-york",
+            bookable: true,
+          },
+        ],
+      },
     };
   }
   async getBookingPreview(): Promise<GetBookingPreviewResult> {

@@ -17,6 +17,8 @@ const PREVIEW_REQUEST_MARKER = "opentablebot:booking-preview-request";
 const PREVIEW_RESPONSE_MARKER = "opentablebot:booking-preview-response";
 const DINING_AREAS_REQUEST_MARKER = "opentablebot:dining-areas-request";
 const DINING_AREAS_RESPONSE_MARKER = "opentablebot:dining-areas-response";
+const SEARCH_REQUEST_MARKER = "opentablebot:search-request";
+const SEARCH_RESPONSE_MARKER = "opentablebot:search-response";
 const AUTHORIZE_REQUEST_MARKER = "opentablebot:authorize-booking-request";
 const AUTHORIZE_RESPONSE_MARKER = "opentablebot:authorize-booking-response";
 const LOCK_REQUEST_MARKER = "opentablebot:lock-slot-request";
@@ -93,6 +95,17 @@ interface DiningAreasPageRequest {
   readonly id: string;
   readonly request: Omit<BookingPreviewPageRequest["request"], "diningArea"> & {
     readonly baseSlotId: string;
+  };
+}
+
+interface SearchPageRequest {
+  readonly marker: typeof SEARCH_REQUEST_MARKER;
+  readonly id: string;
+  readonly request: {
+    readonly term: string;
+    readonly date?: string;
+    readonly time?: string;
+    readonly partySize?: number;
   };
 }
 
@@ -292,6 +305,32 @@ function parseDiningAreasPageRequest(value: unknown): DiningAreasPageRequest | u
     typeof request.reservationKind.kind !== "string"
   ) return undefined;
   return value as unknown as DiningAreasPageRequest;
+}
+
+function parseSearchPageRequest(value: unknown): SearchPageRequest | undefined {
+  if (!isRecord(value) || value.marker !== SEARCH_REQUEST_MARKER) return undefined;
+  if (typeof value.id !== "string" || !isRecord(value.request)) return undefined;
+  const request = value.request;
+  if (typeof request.term !== "string" || request.term.trim() === "") return undefined;
+  const date = typeof request.date === "string" ? request.date : undefined;
+  const time = typeof request.time === "string" ? request.time : undefined;
+  const partySize =
+    typeof request.partySize === "number" &&
+    Number.isInteger(request.partySize) &&
+    request.partySize > 0 &&
+    request.partySize <= 50
+      ? request.partySize
+      : undefined;
+  return {
+    marker: SEARCH_REQUEST_MARKER,
+    id: value.id,
+    request: {
+      term: request.term,
+      ...(date === undefined ? {} : { date }),
+      ...(time === undefined ? {} : { time }),
+      ...(partySize === undefined ? {} : { partySize }),
+    },
+  };
 }
 
 function parseWritePageRequest(value: unknown): WritePageRequest | undefined {
@@ -1043,6 +1082,37 @@ export function exactDiningAreas(detailsState: unknown, expectedSeating: string)
   return [...byId.values()];
 }
 
+/**
+ * Search restaurants through the page's own session: fetch the OpenTable
+ * search SSR page (a GET needs no CSRF token) and return its multiSearch
+ * state for sanitization on the content-script side.
+ */
+async function searchRestaurants(
+  targetWindow: ApolloWindow,
+  request: SearchPageRequest["request"],
+): Promise<unknown> {
+  const url = new URL("/s", targetWindow.location.origin);
+  url.searchParams.set("term", request.term);
+  if (request.date !== undefined) {
+    url.searchParams.set("dateTime", `${request.date}T${request.time ?? "19:00"}`);
+  }
+  if (request.partySize !== undefined) {
+    url.searchParams.set("covers", String(request.partySize));
+  }
+  const response = await targetWindow.fetch(url, {
+    method: "GET",
+    credentials: "include",
+    redirect: "follow",
+  });
+  if (!response.ok) {
+    throw new Error(`Restaurant search returned HTTP ${response.status}`);
+  }
+  const state = extractInitialStateFromHtml(await response.text());
+  const root = isRecord(state) && isRecord(state.state) ? state.state : state;
+  const multiSearch = isRecord(root) && isRecord(root.multiSearch) ? root.multiSearch : {};
+  return { multiSearch };
+}
+
 async function discoverDiningAreas(
   targetWindow: ApolloWindow,
   pageRequest: DiningAreasPageRequest,
@@ -1651,6 +1721,7 @@ function respond(
     | typeof RESPONSE_MARKER
     | typeof PREVIEW_RESPONSE_MARKER
     | typeof DINING_AREAS_RESPONSE_MARKER
+    | typeof SEARCH_RESPONSE_MARKER
     | typeof AUTHORIZE_RESPONSE_MARKER
     | typeof LOCK_RESPONSE_MARKER
     | typeof ACK_LOCK_RESPONSE_MARKER
@@ -1722,6 +1793,18 @@ function installMessageListener(targetWindow: ApolloWindow): void {
           respond(targetWindow, DINING_AREAS_RESPONSE_MARKER, diningAreasRequest.id, {
             ok: false,
             error: error instanceof Error ? error.message.slice(0, 700) : "Dining-area discovery failed",
+          }),
+        );
+      return;
+    }
+    const searchRequest = parseSearchPageRequest(event.data);
+    if (searchRequest !== undefined) {
+      void searchRestaurants(targetWindow, searchRequest.request)
+        .then((result) => respond(targetWindow, SEARCH_RESPONSE_MARKER, searchRequest.id, { ok: true, result }))
+        .catch((error: unknown) =>
+          respond(targetWindow, SEARCH_RESPONSE_MARKER, searchRequest.id, {
+            ok: false,
+            error: error instanceof Error ? error.message.slice(0, 700) : "Restaurant search failed",
           }),
         );
       return;

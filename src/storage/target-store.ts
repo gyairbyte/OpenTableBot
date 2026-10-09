@@ -17,3 +17,11 @@ export interface TargetStore {
   save(record: TargetRecord, expectedVersion: number): Promise<TargetRecord>;
   listRunnable(): Promise<readonly TargetRecord[]>;
 }
+
+/**
+ * A target store that also supports version-checked removal, for operators
+ * that manage the task list interactively.
+ */
+export interface RemovableTargetStore extends TargetStore {
+  remove(targetId: string, expectedVersion: number): Promise<void>;
+}

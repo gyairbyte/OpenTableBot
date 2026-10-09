@@ -79,4 +79,26 @@ describe("FileTargetStore", () => {
     const store = new FileTargetStore({ directory });
     await expect(store.get("target-1")).rejects.toThrow();
   });
+
+  it("removes a target at the current version", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await store.save(record(), 0);
+    await store.remove("target-1", 1);
+    expect(await store.get("target-1")).toBeUndefined();
+    expect(await store.list()).toEqual([]);
+  });
+
+  it("rejects removal at a stale version", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await store.save(record(), 0);
+    await expect(store.remove("target-1", 0)).rejects.toBeInstanceOf(
+      TargetStoreConflictError,
+    );
+    expect(await store.get("target-1")).toBeDefined();
+  });
+
+  it("rejects removal of an unknown target", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await expect(store.remove("target-missing", 1)).rejects.toThrow(/not found/u);
+  });
 });

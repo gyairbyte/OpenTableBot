@@ -117,6 +117,19 @@ A lock has four explicit outcomes: `LOCK_NOT_DISPATCHED`, `LOCK_REJECTED`,
 that authorization: the lock is never retried automatically and no reservation
 may be submitted from an abandoned or unacknowledged browser-local result.
 
+## Operator console
+
+To search restaurants and manage scheduled tasks in a browser instead of flags,
+start the loopback console (it embeds the known-drop scheduler):
+
+```sh
+npm run opentable:ui
+```
+
+It serves `http://127.0.0.1:8790` and, like the CLI, needs the bridge running
+and a signed-in OpenTable tab open. Without `--execute` every scheduled run is
+a dry run. See [Scheduling a known drop](docs/SCHEDULING.md#operator-console).
+
 Stop the bridge with Ctrl+C. Revoke an existing pairing with:
 
 ```sh

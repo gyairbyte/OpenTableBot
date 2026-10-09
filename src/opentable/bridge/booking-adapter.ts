@@ -6,9 +6,11 @@ import type {
   BookingSubmissionResult,
   OpenTableBookingAdapter,
   PreparedBooking,
+  RestaurantSearchQuery,
 } from "../adapter.js";
 import { AdapterFailureCategory, OpenTableAdapterError } from "../errors.js";
 import { normalizeBookingPreview } from "../browser/preview-normalizer.js";
+import type { SafeSearchResults } from "../browser/search-types.js";
 import type {
   AuthorizeBookingResult,
   BookingIntent,
@@ -100,6 +102,9 @@ export class BrowserBridgeOpenTableBookingAdapter implements OpenTableBookingAda
   close(): Promise<void> { return this.read.close(); }
   checkAuthentication(): Promise<AuthenticationStatus> { return this.read.checkAuthentication(); }
   findSlots(target: BookingTarget): Promise<readonly ReservationSlot[]> { return this.read.findSlots(target); }
+  searchRestaurants(query: RestaurantSearchQuery): Promise<SafeSearchResults> {
+    return this.read.searchRestaurants(query);
+  }
   getBookingPreview(target: BookingTarget, slot: ReservationSlot): Promise<BookingPreview> {
     return this.read.getBookingPreview(target, slot).then((preview) => {
       if (slot.previewReference !== undefined) {
