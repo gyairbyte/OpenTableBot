@@ -12,7 +12,7 @@ describe("parseScheduleCliOptions", () => {
     expect(options.warmUpLeadMs).toBe(DEFAULT_WARM_UP_SECONDS * 1_000);
     // The readiness budget must be a real duration, not a raw second count.
     expect(options.readinessMs).toBe(DEFAULT_WARM_UP_SECONDS * 1_000);
-    expect(options.execute).toBe(false);
+    expect(options.execute).toBe(true);
     expect(options.targetId).toBeUndefined();
   });
 
@@ -47,6 +47,11 @@ describe("parseScheduleCliOptions", () => {
     expect(options.maxRuntimeMs).toBe(5 * 60_000);
     expect(options.warmUpLeadMs).toBe(120_000);
     expect(options.readinessMs).toBe(120_000);
+  });
+
+  it("supports an explicit dry-run opt-out", () => {
+    const options = parseScheduleCliOptions(["--dry-run"]);
+    expect(options.execute).toBe(false);
   });
 
   it("rejects a non-positive duration", () => {

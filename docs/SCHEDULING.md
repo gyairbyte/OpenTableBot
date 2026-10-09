@@ -12,7 +12,8 @@ up before the release, waits for the drop, and makes exactly one attempt.
 - It runs **once**. There is no post-drop retry loop.
 - Ambiguous submissions become terminal `OUTCOME_UNKNOWN` and are never retried.
 - Any challenge, sign-out, access denial, or failure pauses the target and logs it.
-- `--execute` is required for a real booking. Without it the run is a dry run.
+- Live booking is the default. Pass `--dry-run` to inspect timing, availability,
+  and policy without locking or submitting.
 
 ## Prerequisites
 
@@ -80,17 +81,20 @@ other state, so a completed or paused target is never re-run by accident.
 ## Running it
 
 ```sh
-# Dry run against every runnable target
+# Live run against every runnable target
 npm run opentable:schedule
 
 # One target, real booking
-npm run opentable:schedule -- --target-id don-angie --execute
+npm run opentable:schedule -- --target-id don-angie
+
+# One target, dry run
+npm run opentable:schedule -- --target-id don-angie --dry-run
 ```
 
 Options:
 
 - `--target-id <id>` restricts the run to one target.
-- `--execute` performs the real lock and submission.
+- `--dry-run` disables locking and submission for this run.
 - `--tick-seconds <n>` polling interval while waiting for a drop (default 5).
 - `--max-runtime-minutes <n>` upper bound before exiting (default 30).
 - `--warm-up-seconds <n>` how long before the drop to start readiness checks and
@@ -108,14 +112,15 @@ the readiness detail rather than run.
 `npm run opentable:ui` starts a loopback HTTP console on
 `http://127.0.0.1:8790` that drives the same store, engine, and scheduler as the
 CLI. It accepts the same flags as the scheduler for `--tick-seconds`,
-`--warm-up-seconds`, and `--execute`, plus `--port <n>`.
+`--warm-up-seconds`, and `--dry-run`, plus `--port <n>`. It starts in Live mode;
+the header control switches between Live and Dry Run without restarting.
 
 ```sh
-# Dry-run console on the default port
+# Live console on the default port
 npm run opentable:ui
 
-# Write-enabled console on a different port
-npm run opentable:ui -- --port 8891 --execute
+# Dry-run console on a different port
+npm run opentable:ui -- --port 8891 --dry-run
 ```
 
 The console needs the bridge and an eligible OpenTable tab running as well. For
@@ -163,9 +168,9 @@ this page", open the restaurant in Chrome and probe again.
 
 The embedded scheduler ticks on the same interval as the CLI and never overlaps
 passes. It uses the same readiness gate as the CLI, so a run pauses rather than
-firing at a browser that is not there. Mode is fixed when the process starts: a
-dry-run console cannot submit a reservation, so restart with `--execute` to
-enable controlled writes.
+firing at a browser that is not there. The console starts in Live mode. Use the
+header control to switch to Dry Run before testing; switching to Live requires
+confirmation because armed tasks may submit real reservations.
 
 The console deliberately does not hold the unattended scheduler lock, so leaving
 it open can never block a scheduled drop. When an unattended run does own the
@@ -184,13 +189,14 @@ From an elevated PowerShell prompt, three minutes of warm-up is added automatica
   -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" `
   -DropTime "10:00" `
   -DropDate "2026-11-08" `
-  -TargetId don-angie `
-  -Execute
+  -TargetId don-angie
 ```
 
 Omit `-DropDate` for a recurring daily warm-up. The task is registered with
 `-WakeToRun` so an idle machine wakes for the drop. Remove it with
 `Unregister-ScheduledTask -TaskName OpenTableBot-Drop`.
+
+Pass `-DryRun` when registering a non-submitting task.
 
 ## Unattended startup
 
@@ -248,4 +254,4 @@ line to `.local/logs/notifications.log` (override with
 
 The scheduler, store, and notifier are implemented and unit-tested. **No
 scheduled live write has completed yet.** Verify one supervised booking with
-`npm run opentable:book -- ... --execute` before relying on an unattended run.
+`npm run opentable:book -- ...` before relying on an unattended run.

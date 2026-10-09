@@ -45,6 +45,8 @@ export interface UiTargetStore extends RemovableTargetStore {
   list(): Promise<readonly TargetRecord[]>;
 }
 
+export type UiBookingMode = "dry-run" | "execute";
+
 export interface UiAdapter {
   searchRestaurants(query: RestaurantSearchQuery): Promise<SafeSearchResults>;
   findSlots(target: BookingTarget): Promise<readonly ReservationSlot[]>;
@@ -85,7 +87,7 @@ const PROBE_BOOKING_POLICY = {
 export interface UiRuntimeStatus {
   readonly bridgeReachable: boolean;
   readonly authenticated: boolean;
-  readonly mode: "dry-run" | "execute";
+  readonly mode: UiBookingMode;
   readonly stateDirectory: string;
   readonly lastTickAt?: string;
   readonly lastTickError?: string;
@@ -97,10 +99,15 @@ export interface UiServerOptions {
   readonly store: UiTargetStore;
   readonly adapter: UiAdapter;
   readonly status: () => Promise<UiRuntimeStatus>;
+  readonly setMode?: (mode: UiBookingMode) => void | Promise<void>;
   readonly host?: string;
   readonly port?: number;
   readonly now?: () => Date;
 }
+
+const ModeRequestSchema = z.strictObject({
+  mode: z.enum(["dry-run", "execute"]),
+});
 
 export interface UiServerAddress {
   readonly host: string;
@@ -290,6 +297,25 @@ export class UiServer {
     }
     if (method === "GET" && path === "/api/status") {
       sendJson(response, 200, { ok: true, status: await this.options.status() });
+      return;
+    }
+    if (method === "POST" && path === "/api/mode") {
+      this.assertJsonMutation(request);
+      if (this.options.setMode === undefined) {
+        throw new HttpError(409, "Booking mode cannot be changed in this console");
+      }
+      const body = await readJsonBody(request);
+      const payload = ModeRequestSchema.safeParse(body);
+      if (!payload.success) {
+        throw new HttpError(400, "Booking mode is invalid", {
+          issues: zodIssues(payload.error),
+        });
+      }
+      await this.options.setMode(payload.data.mode);
+      sendJson(response, 200, {
+        ok: true,
+        mode: payload.data.mode,
+      });
       return;
     }
     if (method === "GET" && path === "/api/search") {

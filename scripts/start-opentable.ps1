@@ -13,9 +13,9 @@
   Both processes run hidden and log to .local/logs. Stop them with
   stop-opentable.ps1, which is what the "Stop OpenTable" desktop icon runs.
 
-  The console defaults to DRY_RUN. Pass -Execute to allow armed tasks to submit
-  real reservations from the console; that mode is fixed when the process starts
-  and cannot be raised from the loopback page.
+  The console defaults to LIVE mode. Pass -DryRun to prevent armed tasks from
+  submitting real reservations; the console can also switch mode from its
+  Booking mode control.
 
   This script does not sign in to OpenTable. Chrome must already be signed in to
   the profile it opens.
@@ -27,7 +27,7 @@
   .\start-opentable.ps1
 
 .EXAMPLE
-  .\start-opentable.ps1 -Execute -NoBrowser
+  .\start-opentable.ps1 -DryRun -NoBrowser
 
 .EXAMPLE
   .\start-opentable.ps1 -NoOpenTable
@@ -40,6 +40,7 @@ param(
   [int]$Port = 8790,
   [int]$BridgePort = 38471,
   [switch]$Execute,
+  [switch]$DryRun,
   [switch]$NoBrowser,
   [switch]$NoOpenTable,
   [switch]$NoConsole,
@@ -59,6 +60,11 @@ Get-OpenTableRunDirectory -RepoRoot $repo | Out-Null
 $problems = New-Object System.Collections.Generic.List[string]
 
 try {
+  if ($Execute -and $DryRun) {
+    throw "Use either -Execute or -DryRun, not both."
+  }
+  $liveMode = -not $DryRun
+
   if (-not (Test-Path -LiteralPath (Join-Path $repo "node_modules"))) {
     throw "Dependencies are missing. Run 'npm ci' in $repo, then try again."
   }
@@ -96,28 +102,60 @@ try {
   # 2. Operator console.
   if ($NoConsole) {
     Write-Host "Console: skipped (-NoConsole)."
-  } elseif (Test-OpenTablePort -Port $Port) {
-    Write-Host "Console: already listening on port $Port."
   } else {
-    $uiCommand = "npm run opentable:ui -- --port $Port"
-    if ($Execute) { $uiCommand += " --execute" }
-    $consoleProcess = Start-OpenTableBackgroundCommand `
-      -Command $uiCommand `
-      -WorkingDirectory $repo `
-      -LogPath (Join-Path $logDirectory "console.log")
-    $consolePid = $consoleProcess.Id
-    $consoleStarted = $true
-    Write-Host "Console: starting (pid $consolePid)."
-    if (-not (Wait-OpenTablePort -Port $Port -TimeoutSeconds $WaitSeconds)) {
-      $problems.Add("The console did not open port $Port within $WaitSeconds seconds. See $(Join-Path $logDirectory 'console.log').")
-    } else {
-      Write-Host "Console: listening on port $Port." -ForegroundColor Green
+    $consoleListening = Test-OpenTablePort -Port $Port
+    if ($consoleListening) {
+      $desiredMode = "dry-run"
+      if ($liveMode) { $desiredMode = "execute" }
+      $modeSwitched = $false
+      try {
+        $currentStatus = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/status" -TimeoutSec 15
+        if ($currentStatus.status.mode -ne $desiredMode) {
+          $modeBody = @{ mode = $desiredMode } | ConvertTo-Json -Compress
+          Invoke-RestMethod `
+            -Uri "http://127.0.0.1:$Port/api/mode" `
+            -Method Post `
+            -ContentType "application/json" `
+            -Body $modeBody | Out-Null
+          Write-Host "Console: switched to $desiredMode mode."
+        } else {
+          Write-Host "Console: already listening on port $Port in $desiredMode mode."
+        }
+        $modeSwitched = $true
+      } catch {
+        Write-Host "Console: existing process does not support mode switching; restarting it."
+        $existingConsolePid = Get-OpenTableListenerProcessId -Port $Port
+        if ($null -ne $existingConsolePid) {
+          Stop-OpenTableProcessTree -ProcessId $existingConsolePid | Out-Null
+          [void](Wait-OpenTablePort -Port $Port -TimeoutSeconds 15)
+          $consoleListening = Test-OpenTablePort -Port $Port
+        }
+      }
+      if (-not $modeSwitched -and $consoleListening) {
+        $problems.Add("The existing console could not be switched or stopped on port $Port.")
+      }
+    }
+    if (-not $consoleListening) {
+      $uiCommand = "npm run opentable:ui -- --port $Port"
+      if ($liveMode) { $uiCommand += " --execute" } else { $uiCommand += " --dry-run" }
+      $consoleProcess = Start-OpenTableBackgroundCommand `
+        -Command $uiCommand `
+        -WorkingDirectory $repo `
+        -LogPath (Join-Path $logDirectory "console.log")
+      $consolePid = $consoleProcess.Id
+      $consoleStarted = $true
+      Write-Host "Console: starting (pid $consolePid)."
+      if (-not (Wait-OpenTablePort -Port $Port -TimeoutSeconds $WaitSeconds)) {
+        $problems.Add("The console did not open port $Port within $WaitSeconds seconds. See $(Join-Path $logDirectory 'console.log').")
+      } else {
+        Write-Host "Console: listening on port $Port." -ForegroundColor Green
+      }
     }
   }
 
   # Remember what this launcher started so Stop only reports on real processes.
   $mode = "dry-run"
-  if ($Execute) { $mode = "execute" }
+  if ($liveMode) { $mode = "execute" }
   Save-OpenTableProcessRecord -RepoRoot $repo -Record ([pscustomobject]@{
     startedAt    = (Get-Date).ToUniversalTime().ToString("o")
     mode         = $mode
@@ -146,7 +184,7 @@ try {
   # 4. Report readiness, then open the console.
   Write-Host ""
   Write-Host "Booking mode: $mode"
-  if ($Execute) {
+  if ($liveMode) {
     Write-Host "WRITE MODE: armed tasks submitted from this console create real reservations." -ForegroundColor Yellow
   } else {
     Write-Host "Dry run: no reservation can be submitted from this console." -ForegroundColor Green

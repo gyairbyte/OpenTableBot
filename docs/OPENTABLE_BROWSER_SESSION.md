@@ -10,11 +10,10 @@ Phase 3 adds only five explicit controlled-booking operations:
 method, headers, provider request body, JavaScript, provider token, or payment
 data. MAIN-world code owns the fixed Standard provider operations.
 
-`opentable:book` is dry-run by default. The standalone `--execute` flag is the
-developer safety interlock and must be used only after checking the exact
-displayed selection. If a dispatched submission cannot be confirmed, it
-returns terminal `OUTCOME_UNKNOWN`; do not retry before checking the user's
-OpenTable reservations manually.
+`opentable:book` is live by default. Pass `--dry-run` after checking the exact
+displayed selection when you want a non-submitting test. If a dispatched
+submission cannot be confirmed, it returns terminal `OUTCOME_UNKNOWN`; do not
+retry before checking the user's OpenTable reservations manually.
 
 `LOCK_SLOT` uses one absolute deadline across Node and Chrome. Its sanitized
 stage log distinguishes a timeout before provider dispatch

@@ -18,7 +18,12 @@ import {
 } from "./controlled-booking.js";
 
 export interface ControlledBookingEngineOptions {
-  readonly execute: boolean;
+  /**
+   * A function permits the operator console to switch mode without rebuilding
+   * the scheduler and adapter stack. Boolean callers remain supported for CLI
+   * and test use.
+   */
+  readonly execute: boolean | (() => boolean);
 }
 
 const STAGE_STATES: Readonly<Record<ControlledBookingStage, TargetState>> = {
@@ -55,6 +60,10 @@ export class ControlledBookingEngine implements BookingEngine {
 
     const target = record.target;
     let current = record;
+    const execute =
+      typeof this.options.execute === "function"
+        ? this.options.execute()
+        : this.options.execute;
 
     const move = async (
       to: TargetState,
@@ -104,7 +113,7 @@ export class ControlledBookingEngine implements BookingEngine {
 
     try {
       const result = await runControlledBooking(adapter, target, plan.selected, {
-        execute: this.options.execute,
+        execute,
         onStage: async (stage) => {
           await move(STAGE_STATES[stage]);
         },

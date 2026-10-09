@@ -13,7 +13,10 @@
   scheduled task starts Chrome and the bridge; it never signs in for you.
 
 .EXAMPLE
-  .\register-scheduled-task.ps1 -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" -DropTime "10:00" -DropDate "2026-11-08" -TargetId don-angie -Execute
+  .\register-scheduled-task.ps1 -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" -DropTime "10:00" -DropDate "2026-11-08" -TargetId don-angie
+
+.EXAMPLE
+  .\register-scheduled-task.ps1 -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" -DropTime "10:00" -TargetId don-angie -DryRun
 
 .EXAMPLE
   # Recurring daily warm-up at 09:57 for a 10:00 drop
@@ -25,11 +28,16 @@ param(
   [string]$DropDate = "",
   [string]$TargetId = "",
   [switch]$Execute,
+  [switch]$DryRun,
   [string]$TaskName = "OpenTableBot-Drop",
   [int]$WarmUpSeconds = 180
 )
 
 $ErrorActionPreference = "Stop"
+if ($Execute -and $DryRun) {
+  throw "Use either -Execute or -DryRun, not both."
+}
+$liveMode = -not $DryRun
 $scriptPath = Join-Path $PSScriptRoot "run-scheduled.ps1"
 if (-not (Test-Path -LiteralPath $scriptPath)) {
   throw "run-scheduled.ps1 was not found next to this script."
@@ -51,7 +59,7 @@ $argumentList = @(
 if ($TargetId -ne "") { $argumentList += @("-TargetId", "`"$TargetId`"") }
 $argumentList += @("-WarmUpSeconds", "$WarmUpSeconds")
 $argumentList += @("-ReadinessSeconds", "$WarmUpSeconds")
-if ($Execute) { $argumentList += "-Execute" }
+if ($liveMode) { $argumentList += "-Execute" } else { $argumentList += "-DryRun" }
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument ($argumentList -join " ")
 if ($DropDate -ne "") {

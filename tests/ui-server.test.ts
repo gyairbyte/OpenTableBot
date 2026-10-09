@@ -30,6 +30,7 @@ interface HarnessOverrides {
     target: BookingTarget,
     slot: ReservationSlot,
   ) => Promise<BookingPreview>;
+  readonly setMode?: (mode: "dry-run" | "execute") => void | Promise<void>;
 }
 
 const running: Harness[] = [];
@@ -58,15 +59,20 @@ async function startHarness(overrides: HarnessOverrides = {}): Promise<Harness> 
     overrides.getBookingPreview ??
       (async (): Promise<BookingPreview> => makePreview()),
   );
+  let mode: "dry-run" | "execute" = "dry-run";
   const server = new UiServer({
     store,
     adapter: { searchRestaurants: search, findSlots, getBookingPreview },
     status: async (): Promise<UiRuntimeStatus> => ({
       bridgeReachable: true,
       authenticated: true,
-      mode: "dry-run",
+      mode,
       stateDirectory: "test-state",
     }),
+    setMode: (nextMode) => {
+      mode = nextMode;
+      return overrides.setMode?.(nextMode);
+    },
     port: 0,
   });
   const address = await server.start();
@@ -133,6 +139,8 @@ describe("UiServer", () => {
     const html = await response.text();
     expect(html).toContain("OpenTableBot console");
     expect(html).toContain("/api/targets");
+    expect(html).toContain("mode-select");
+    expect(html).toContain("/api/mode");
   });
 
   it("reports bridge and scheduler status", async () => {
@@ -146,6 +154,23 @@ describe("UiServer", () => {
     expect(payload.ok).toBe(true);
     expect(payload.status.bridgeReachable).toBe(true);
     expect(payload.status.mode).toBe("dry-run");
+  });
+
+  it("switches booking mode through the loopback API", async () => {
+    const harness = await startHarness();
+    const response = await jsonPost(harness, "/api/mode", { mode: "execute" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, mode: "execute" });
+
+    const status = await fetch(`${harness.address.url}/api/status`);
+    const payload = (await status.json()) as { readonly status: UiRuntimeStatus };
+    expect(payload.status.mode).toBe("execute");
+  });
+
+  it("rejects an invalid booking mode", async () => {
+    const harness = await startHarness();
+    const response = await jsonPost(harness, "/api/mode", { mode: "production" });
+    expect(response.status).toBe(400);
   });
 
   it("searches through the paired session", async () => {

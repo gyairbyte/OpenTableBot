@@ -2,10 +2,11 @@
 
 Local-first engineering foundation for a pre-authorized restaurant reservation
 assistant. Phase 3 adds a controlled, single-shot Standard reservation path to
-the paired normal-Chrome architecture. It is dry-run by default and implements
+the paired normal-Chrome architecture. Live mode is the default and implements
 an explicit capability, real slot lock, post-lock terms revalidation, and one
-reservation-submission attempt. Phase 4 adds a bounded known-drop scheduler that
-warms up before a release time and performs exactly one attempt; see
+reservation-submission attempt. Use the explicit dry-run switch when testing.
+Phase 4 adds a bounded known-drop scheduler that warms up before a release time
+and performs exactly one attempt; see
 [docs/SCHEDULING.md](docs/SCHEDULING.md).
 
 ## Requirements
@@ -107,9 +108,9 @@ npm run opentable:book -- --restaurant-id 12345 --restaurant-name "Example Resta
   --preferred 19:00 --timezone America/New_York --auto-book-authorized true
 ```
 
-Without the standalone `--execute` flag it cannot create a booking capability
-or lock inventory. `--execute` enables one controlled Standard lock and at most
-one submission. Payment-backed, prepaid, Experience, and interactive SCA/3DS
+With the default live mode, it enables one controlled Standard lock and at most
+one submission. Pass `--dry-run` to prevent capability creation, locking, and
+submission. Payment-backed, prepaid, Experience, and interactive SCA/3DS
 bookings fail closed.
 
 A lock has four explicit outcomes: `LOCK_NOT_DISPATCHED`, `LOCK_REJECTED`,
@@ -127,11 +128,12 @@ npm run opentable:ui
 ```
 
 It serves `http://127.0.0.1:8790` and, like the CLI, needs the bridge running
-and a signed-in OpenTable tab open. Without `--execute` every scheduled run is
-a dry run. The console searches restaurants with typeahead, checks live
-availability so you can pick real times and real dining areas, previews the
-booking terms and the fail-closed policy decision before a drop, and lets you
-edit, arm, pause, and delete tasks. See
+and a signed-in OpenTable tab open. The console starts in LIVE mode, and its
+Booking mode control can switch between Live and Dry Run at runtime. The
+console searches restaurants with typeahead, checks live availability so you
+can pick real times and real dining areas, previews the booking terms and the
+fail-closed policy decision before a drop, and lets you edit, arm, pause, and
+delete tasks. See
 [Scheduling a known drop](docs/SCHEDULING.md#operator-console).
 
 ### Starting the console
@@ -153,11 +155,10 @@ Two launchers wrap that, and both are what the desktop icons run:
 
 `start-opentable.ps1` skips whatever is already listening, waits for both ports,
 opens a normal signed-in OpenTable tab for the extension, reports bridge and
-session state, and opens the console page. It defaults to DRY_RUN; pass
-`-Execute` to let armed tasks submit real reservations, which is fixed when the
-process starts. Use `-NoOpenTable` only if you already have an eligible
-OpenTable tab open. It also starts the bridge that the scheduled drop needs, so
-a drop triggered while it is running finds a live bridge.
+session state, and opens the console page in LIVE mode. Pass `-DryRun` to start
+without real submissions. Use `-NoOpenTable` only if you already have an
+eligible OpenTable tab open. It also starts the bridge that the scheduled drop
+needs, so a drop triggered while it is running finds a live bridge.
 
 `stop-opentable.ps1` refuses to stop the bridge while an unattended scheduled
 run holds the scheduler lock, because that could abandon a reservation
@@ -167,16 +168,17 @@ console. Chrome is left open in both cases.
 ### Desktop icons
 
 ```powershell
-.\scripts\install-desktop-shortcuts.ps1            # dry-run icons
-.\scripts\install-desktop-shortcuts.ps1 -WriteMode # Start icon runs -Execute
+.\scripts\install-desktop-shortcuts.ps1            # live-mode icons
+.\scripts\install-desktop-shortcuts.ps1 -DryRun    # install a dry-run Start icon
 .\scripts\install-desktop-shortcuts.ps1 -Remove    # delete both icons
 ```
 
 This writes **Start OpenTable** and **Stop OpenTable** to your Desktop. The
-Start icon brings up the bridge and console and opens the page; the Stop icon
-shuts both down. Each keeps its window open if something needs attention, so a
-failure is readable instead of a window that flashes and closes. Re-run the
-installer after moving the repository, since the shortcuts hold absolute paths.
+Start icon brings up the bridge and console in LIVE mode and opens the page; the
+Stop icon shuts both down. Each keeps its window open if something needs
+attention, so a failure is readable instead of a window that flashes and
+closes. Re-run the installer after moving the repository, since the shortcuts
+hold absolute paths.
 
 ## Unattended drops
 

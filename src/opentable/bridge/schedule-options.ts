@@ -24,6 +24,11 @@ function parseFlags(args: readonly string[]): ReadonlyMap<string, string> {
       index += 1;
       continue;
     }
+    if (key === "--dry-run") {
+      flags.set("execute", "false");
+      index += 1;
+      continue;
+    }
     if (
       key === undefined ||
       !key.startsWith("--") ||
@@ -72,7 +77,7 @@ export function parseScheduleCliOptions(args: readonly string[]): ScheduleCliOpt
   const warmUpSeconds = positiveNumber(flags, "warm-up-seconds", DEFAULT_WARM_UP_SECONDS);
   return {
     targetId: flags.get("target-id"),
-    execute: flags.get("execute") === "true",
+    execute: flags.get("execute") !== "false",
     tickMs: positiveNumber(flags, "tick-seconds", DEFAULT_TICK_SECONDS) * 1_000,
     maxRuntimeMs:
       positiveNumber(flags, "max-runtime-minutes", DEFAULT_MAX_RUNTIME_MINUTES) * 60_000,

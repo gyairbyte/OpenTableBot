@@ -41,6 +41,11 @@ function parseFlags(args: readonly string[]): ReadonlyMap<string, string> {
       index += 1;
       continue;
     }
+    if (key === "--dry-run") {
+      flags.set("execute", "false");
+      index += 1;
+      continue;
+    }
     if (
       key === undefined ||
       !key.startsWith("--") ||
@@ -91,7 +96,7 @@ function describe(error: unknown): string {
 
 async function main(): Promise<void> {
   const flags = parseFlags(process.argv.slice(2));
-  const execute = flags.get("execute") === "true";
+  let execute = flags.get("execute") !== "false";
 
   const credential = await loadCredential();
   const client = new OpenTableBridgeClient({
@@ -103,7 +108,10 @@ async function main(): Promise<void> {
   });
   const store = new FileTargetStore();
   const notifier = new LocalNotifier();
-  const engine = new ControlledBookingEngine({ adapter, store, notifier }, { execute });
+  const engine = new ControlledBookingEngine(
+    { adapter, store, notifier },
+    { execute: () => execute },
+  );
   const scheduler = new ReservationScheduler(engine, adapter, store, notifier, {
     warmUpLeadMs: warmUpLeadMs(flags),
     readinessPollMs: DEFAULT_READINESS_INTERVAL_MS,
@@ -170,6 +178,9 @@ async function main(): Promise<void> {
         stateDirectory,
         ...loop.status(),
       };
+    },
+    setMode: (mode) => {
+      execute = mode === "execute";
     },
   });
 

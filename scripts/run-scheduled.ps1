@@ -13,12 +13,16 @@
   script starts Chrome and the bridge; it never signs in for you.
 
 .EXAMPLE
-  .\run-scheduled.ps1 -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" -TargetId don-angie -Execute
+  .\run-scheduled.ps1 -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" -TargetId don-angie
+
+.EXAMPLE
+  .\run-scheduled.ps1 -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" -TargetId don-angie -DryRun
 #>
 param(
   [Parameter(Mandatory = $true)][string]$RestaurantUrl,
   [string]$TargetId = "",
   [switch]$Execute,
+  [switch]$DryRun,
   [int]$BridgePort = 38471,
   [int]$MaxRuntimeMinutes = 30,
   [int]$WarmUpSeconds = 180,
@@ -26,6 +30,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($Execute -and $DryRun) {
+  throw "Use either -Execute or -DryRun, not both."
+}
+$liveMode = -not $DryRun
 . (Join-Path $PSScriptRoot "opentable-runtime.ps1")
 
 $repo = Get-OpenTableRepoRoot -ScriptRoot $PSScriptRoot
@@ -67,6 +75,6 @@ $schedulerArgs = @(
   "--readiness-seconds", "$ReadinessSeconds"
 )
 if ($TargetId -ne "") { $schedulerArgs += @("--target-id", $TargetId) }
-if ($Execute) { $schedulerArgs += "--execute" }
+if ($liveMode) { $schedulerArgs += "--execute" } else { $schedulerArgs += "--dry-run" }
 & npm @schedulerArgs
 exit $LASTEXITCODE

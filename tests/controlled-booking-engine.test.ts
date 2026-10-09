@@ -146,6 +146,30 @@ describe("ControlledBookingEngine", () => {
     expect(adapter.book).not.toHaveBeenCalled();
   });
 
+  it("reads a callable booking mode when a console changes mode at runtime", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seed(store);
+    const adapter = bookingAdapter();
+    let execute = false;
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: () => execute },
+    );
+
+    await engine.runOnce("target-1");
+    expect((await store.get("target-1"))?.state).toBe("PAUSED");
+    expect(adapter.authorizeBooking).not.toHaveBeenCalled();
+
+    const paused = await store.get("target-1");
+    if (paused === undefined) throw new Error("Target disappeared during mode test");
+    await store.save({ ...paused, state: TargetState.ARMED }, paused.version);
+    execute = true;
+    await engine.runOnce("target-1");
+
+    expect((await store.get("target-1"))?.state).toBe("BOOKED");
+    expect(adapter.authorizeBooking).toHaveBeenCalledTimes(1);
+  });
+
   it("pauses fail-closed when slot discovery fails", async () => {
     const store = new FileTargetStore({ directory: await tempDirectory() });
     await seed(store);

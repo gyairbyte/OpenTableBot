@@ -5,7 +5,8 @@
 .DESCRIPTION
   Writes two .lnk files that run start-opentable.ps1 and stop-opentable.ps1 with
   a hidden-friendly, execution-policy-bypassing PowerShell invocation, so the
-  icons work without any shell setup.
+  icons work without any shell setup. The Start shortcut is live by default;
+  pass -DryRun to install a non-submitting shortcut.
 
   Re-running the script overwrites the existing shortcuts, so it is safe to run
   again after moving the repository. Delete the .lnk files to remove them.
@@ -14,7 +15,7 @@
   .\install-desktop-shortcuts.ps1
 
 .EXAMPLE
-  .\install-desktop-shortcuts.ps1 -WriteMode
+  .\install-desktop-shortcuts.ps1 -DryRun
 
 .EXAMPLE
   .\install-desktop-shortcuts.ps1 -DesktopPath "C:\Users\me\Desktop"
@@ -22,12 +23,17 @@
 param(
   [string]$DesktopPath = "",
   [switch]$WriteMode,
+  [switch]$DryRun,
   [string]$StartIcon = "",
   [string]$StopIcon = "",
   [switch]$Remove
 )
 
 $ErrorActionPreference = "Stop"
+if ($WriteMode -and $DryRun) {
+  throw "Use either -WriteMode or -DryRun, not both."
+}
+$writeMode = -not $DryRun
 . (Join-Path $PSScriptRoot "opentable-runtime.ps1")
 
 $repo = Get-OpenTableRepoRoot -ScriptRoot $PSScriptRoot
@@ -77,7 +83,7 @@ if ($StopIcon -eq "") {
 }
 
 $startArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$startScript`" -HoldOnError"
-if ($WriteMode) { $startArguments += " -Execute" }
+if ($writeMode) { $startArguments += " -Execute" } else { $startArguments += " -DryRun" }
 
 $shell = New-Object -ComObject WScript.Shell
 
@@ -85,7 +91,7 @@ $startShortcut = $shell.CreateShortcut($startShortcutPath)
 $startShortcut.TargetPath = $powershell
 $startShortcut.Arguments = $startArguments
 $startShortcut.WorkingDirectory = $repo
-if ($WriteMode) {
+if ($writeMode) {
   $startShortcut.Description = "Start the OpenTableBot bridge and console in WRITE mode (real reservations)"
 } else {
   $startShortcut.Description = "Start the OpenTableBot bridge and console (dry run)"
@@ -103,7 +109,7 @@ $stopShortcut.Save()
 
 Write-Host "Desktop shortcuts created in $desktop" -ForegroundColor Green
 Write-Host "  Start OpenTable  -> $startArguments"
-if ($WriteMode) {
+if ($writeMode) {
   Write-Host "                     (WRITE MODE: real reservations can be submitted)" -ForegroundColor Yellow
 } else {
   Write-Host "                     (dry run)"

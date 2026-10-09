@@ -26,6 +26,11 @@ function parseFlags(args: readonly string[]): ReadonlyMap<string, string> {
       index += 1;
       continue;
     }
+    if (key === "--dry-run") {
+      flags.set("execute", "false");
+      index += 1;
+      continue;
+    }
     if (key === undefined || !key.startsWith("--") || value === undefined || value.startsWith("--")) {
       throw new Error(`Expected --name value arguments; received ${key ?? "end of input"}`);
     }
@@ -257,7 +262,7 @@ async function runBook(
     console.log(JSON.stringify({ selected: null, evaluations: selection.evaluations }, null, 2));
     throw new Error("No candidate produced an authorized read-only preview");
   }
-  const execute = flags.get("execute") === "true";
+  const execute = flags.get("execute") !== "false";
   console.log(JSON.stringify({
     exactSelection: {
       restaurant: target.restaurant,

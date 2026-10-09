@@ -55,7 +55,7 @@ reservation.
 - Critical terms are fetched, sanitized, normalized, and revalidated after lock
 - The make-reservation request is built only inside Chrome and dispatched once
 - Ambiguous post-dispatch outcomes become terminal `OUTCOME_UNKNOWN`
-- The CLI is dry-run by default and needs standalone `--execute` for writes
+- The CLI is live by default and supports an explicit `--dry-run` opt-out
 - Lock uses one propagated 25-second deadline and an explicit provider dispatch boundary
 - Lock outcomes are typed as not-dispatched, rejected, confirmed, or unknown
 - Lock acknowledgement and post-lock revalidation are separate fail-closed steps

@@ -18,9 +18,12 @@ export const FRONTEND_HTML = String.raw`<!doctype html>
   h2 { font-size: 15px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: .04em; color: #4b5563; }
   header { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; justify-content: space-between; margin-bottom: 20px; }
   section { background: #fff; border: 1px solid #d9dee5; border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+  .status-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: flex-end; }
   .status { font-size: 13px; color: #4b5563; }
   .status.ok { color: #0f7b3f; }
   .status.warn { color: #a2530a; }
+  .mode-control { flex-direction: row; align-items: center; font-size: 12px; }
+  .mode-control select { padding: 3px 6px; }
   .message { min-height: 20px; font-size: 13px; margin: 8px 0; }
   .message.error { color: #b3261e; }
   .message.ok { color: #0f7b3f; }
@@ -71,7 +74,16 @@ export const FRONTEND_HTML = String.raw`<!doctype html>
 <body>
 <header>
   <h1>OpenTableBot console</h1>
-  <div id="status" class="status">Loading status...</div>
+  <div class="status-controls">
+    <div id="status" class="status">Loading status...</div>
+    <label class="mode-control">Booking mode
+      <select id="mode-select">
+        <option value="execute">Live</option>
+        <option value="dry-run">Dry Run</option>
+      </select>
+      <button type="button" id="mode-apply">Apply</button>
+    </label>
+  </div>
 </header>
 
 <div id="banner" class="banner" hidden></div>
@@ -369,6 +381,7 @@ function selectedAreas() {
 function loadStatus() {
   return api("/api/status").then(function (payload) {
     var status = payload.status;
+    byId("mode-select").value = status.mode;
     var serialized = JSON.stringify(status);
     if (serialized === state.lastStatusJson) return;
     state.lastStatusJson = serialized;
@@ -394,6 +407,34 @@ function loadStatus() {
     var node = byId("status");
     node.textContent = "Status unavailable: " + error.message;
     node.className = "status warn";
+  });
+}
+
+function changeMode() {
+  var select = byId("mode-select");
+  var mode = select.value;
+  if (mode === "execute" && !window.confirm(
+    "Switch to LIVE mode? Armed tasks can submit real reservations at their release time."
+  )) {
+    loadStatus();
+    return;
+  }
+  var button = byId("mode-apply");
+  button.disabled = true;
+  api("/api/mode", { method: "POST", body: { mode: mode } }).then(function () {
+    setMessage(
+      "task-message",
+      mode === "execute"
+        ? "Live mode enabled. Armed tasks may submit real reservations."
+        : "Dry Run enabled. No reservation will be submitted.",
+      mode === "execute" ? "error" : "info"
+    );
+    return loadStatus();
+  }).catch(function (error) {
+    setMessage("task-message", error.message, "error");
+    return loadStatus();
+  }).then(function () {
+    button.disabled = false;
   });
 }
 
@@ -1050,6 +1091,7 @@ byId("task-form").addEventListener("submit", submitTask);
 byId("task-cancel").addEventListener("click", cancelEdit);
 byId("task-probe").addEventListener("click", checkAvailability);
 byId("task-preview").addEventListener("click", previewTerms);
+byId("mode-apply").addEventListener("click", changeMode);
 byId("search-form").addEventListener("submit", runSearch);
 byId("search-form").term.addEventListener("input", scheduleTypeahead);
 byId("search-form").term.addEventListener("keydown", handleTermKey);
