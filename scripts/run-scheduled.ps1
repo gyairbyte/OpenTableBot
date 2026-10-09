@@ -26,46 +26,36 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$repo = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "opentable-runtime.ps1")
+
+$repo = Get-OpenTableRepoRoot -ScriptRoot $PSScriptRoot
 Set-Location $repo
-
-function Find-Chrome {
-  $candidates = @()
-  if ($env:ProgramFiles) {
-    $candidates += (Join-Path $env:ProgramFiles "Google\Chrome\Application\chrome.exe")
-  }
-  if (${env:ProgramFiles(x86)}) {
-    $candidates += (Join-Path ${env:ProgramFiles(x86)} "Google\Chrome\Application\chrome.exe")
-  }
-  if ($env:LOCALAPPDATA) {
-    $candidates += (Join-Path $env:LOCALAPPDATA "Google\Chrome\Application\chrome.exe")
-  }
-  foreach ($candidate in $candidates) {
-    if (Test-Path -LiteralPath $candidate) { return $candidate }
-  }
-  throw "chrome.exe was not found in the standard install locations."
-}
-
-function Test-BridgeListening {
-  param([int]$Port)
-  $connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-  return [bool]$connection
-}
+$logDirectory = Get-OpenTableLogDirectory -RepoRoot $repo
 
 # 1. Open the restaurant page in the user's normal Chrome profile. When Chrome is
 #    already running this opens a tab in the existing instance, which also starts
 #    the MV3 service worker so the extension reconnects to the bridge.
-$chrome = Find-Chrome
+$chrome = Find-OpenTableChrome
+if ($null -eq $chrome) {
+  throw "chrome.exe was not found in the standard install locations."
+}
 Start-Process -FilePath $chrome -ArgumentList $RestaurantUrl | Out-Null
 Write-Host "Opened $RestaurantUrl in Chrome."
 
-# 2. Ensure the local bridge is running.
-if (-not (Test-BridgeListening -Port $BridgePort)) {
-  Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npm run opentable:bridge" -WindowStyle Hidden | Out-Null
-  Write-Host "Started the local bridge on port $BridgePort."
-  Start-Sleep -Seconds 5
-} else {
+# 2. Ensure the local bridge is running. The scheduler reads the same port from
+#    the environment, so set it before either process starts.
+$env:OPENTABLE_BRIDGE_PORT = "$BridgePort"
+if (Test-OpenTablePort -Port $BridgePort) {
   Write-Host "Local bridge already listening on port $BridgePort."
+} else {
+  Start-OpenTableBackgroundCommand `
+    -Command "npm run opentable:bridge" `
+    -WorkingDirectory $repo `
+    -LogPath (Join-Path $logDirectory "bridge.log") | Out-Null
+  Write-Host "Started the local bridge on port $BridgePort (log: $(Join-Path $logDirectory 'bridge.log'))."
+  if (-not (Wait-OpenTablePort -Port $BridgePort -TimeoutSeconds 30)) {
+    Write-Warning "The bridge did not open port $BridgePort yet; the scheduler will keep waiting for it."
+  }
 }
 
 # 3. Run the scheduler through the drop. The scheduler itself waits for readiness

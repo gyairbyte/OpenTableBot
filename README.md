@@ -134,6 +134,48 @@ booking terms and the fail-closed policy decision before a drop, and lets you
 edit, arm, pause, and delete tasks. See
 [Scheduling a known drop](docs/SCHEDULING.md#operator-console).
 
+### Starting the console
+
+`npm run opentable:ui` is the console itself, and it needs the bridge running
+too. The usual way to start both by hand is:
+
+```sh
+npm run opentable:bridge   # one terminal, keep it running
+npm run opentable:ui       # another terminal, then open http://127.0.0.1:8790
+```
+
+Two launchers wrap that, and both are what the desktop icons run:
+
+```powershell
+.\scripts\start-opentable.ps1    # bridge + console, hidden, logs to .local\logs
+.\scripts\stop-opentable.ps1     # stops both, process trees included
+```
+
+`start-opentable.ps1` skips whatever is already listening, waits for both ports,
+reports bridge and session state, and opens the console page. It defaults to
+DRY_RUN; pass `-Execute` to let armed tasks submit real reservations, which is
+fixed when the process starts. It also starts the bridge that the scheduled
+drop needs, so a drop triggered while it is running finds a live bridge.
+
+`stop-opentable.ps1` refuses to stop the bridge while an unattended scheduled
+run holds the scheduler lock, because that could abandon a reservation
+mid-booking; pass `-Force` to override. Add `-KeepBridge` to stop only the
+console. Chrome is left open in both cases.
+
+### Desktop icons
+
+```powershell
+.\scripts\install-desktop-shortcuts.ps1            # dry-run icons
+.\scripts\install-desktop-shortcuts.ps1 -WriteMode # Start icon runs -Execute
+.\scripts\install-desktop-shortcuts.ps1 -Remove    # delete both icons
+```
+
+This writes **Start OpenTable** and **Stop OpenTable** to your Desktop. The
+Start icon brings up the bridge and console and opens the page; the Stop icon
+shuts both down. Each keeps its window open if something needs attention, so a
+failure is readable instead of a window that flashes and closes. Re-run the
+installer after moving the repository, since the shortcuts hold absolute paths.
+
 ## Unattended drops
 
 You do not have to keep Chrome or the bridge open. `scripts/register-scheduled-task.ps1`
