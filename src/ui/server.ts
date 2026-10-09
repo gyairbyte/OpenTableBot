@@ -5,7 +5,16 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { BookingTargetSchema } from "../domain/booking-target.js";
+import { z } from "zod";
+import { evaluateBookingPreview } from "../domain/booking-policy.js";
+import { BookingTargetSchema, type BookingTarget } from "../domain/booking-target.js";
+import type { DiningAreaOption } from "../domain/dining-area.js";
+import {
+  IanaTimeZoneSchema,
+  LocalDateSchema,
+  LocalTimeSchema,
+} from "../domain/primitives.js";
+import type { BookingPreview, ReservationSlot } from "../domain/reservation-slot.js";
 import { TargetState, canTransitionTarget } from "../domain/target-state.js";
 import type { RestaurantSearchQuery } from "../opentable/adapter.js";
 import type { SafeSearchResults } from "../opentable/browser/search-types.js";
@@ -19,13 +28,59 @@ const MAX_BODY_BYTES = 64 * 1024;
 export const DEFAULT_UI_HOST = "127.0.0.1";
 export const DEFAULT_UI_PORT = 8790;
 
+/**
+ * States a stored definition may be rewritten from. Mid-flight and terminal
+ * states are excluded so an edit cannot change the terms of a booking that is
+ * already being locked, submitted, or finished.
+ */
+const EDITABLE_TARGET_STATES: readonly TargetState[] = [
+  TargetState.DRAFT,
+  TargetState.ARMED,
+  TargetState.WAITING,
+  TargetState.PAUSED,
+  TargetState.SLOT_LOST,
+];
+
 export interface UiTargetStore extends RemovableTargetStore {
   list(): Promise<readonly TargetRecord[]>;
 }
 
-export interface UiSearchAdapter {
+export interface UiAdapter {
   searchRestaurants(query: RestaurantSearchQuery): Promise<SafeSearchResults>;
+  findSlots(target: BookingTarget): Promise<readonly ReservationSlot[]>;
+  getBookingPreview(
+    target: BookingTarget,
+    slot: ReservationSlot,
+  ): Promise<BookingPreview>;
 }
+
+const ProbeRequestSchema = z.strictObject({
+  restaurantId: z.string().min(1).max(80),
+  restaurantName: z.string().min(1).max(200),
+  timeZone: IanaTimeZoneSchema,
+  date: LocalDateSchema,
+  partySize: z.number().int().min(1).max(20),
+  earliest: LocalTimeSchema,
+  latest: LocalTimeSchema,
+  preferred: LocalTimeSchema,
+});
+
+/** Selection fields of a preview request; the target is validated separately. */
+const PreviewSelectionSchema = z.object({
+  time: LocalTimeSchema.optional(),
+  diningAreaLabel: z.string().min(1).max(80).optional(),
+});
+
+/** Permissive policy for a read-only probe: it can never authorize a booking. */
+const PROBE_BOOKING_POLICY = {
+  allowPrepaid: true,
+  maxAuthorizedPrepaidCents: 0,
+  maxAuthorizedCancellationNoShowCents: 0,
+  currency: "USD",
+  allowExperiences: true,
+  allowPaymentMethodRequired: true,
+  autoBookAuthorized: false,
+} as const;
 
 export interface UiRuntimeStatus {
   readonly bridgeReachable: boolean;
@@ -38,7 +93,7 @@ export interface UiRuntimeStatus {
 
 export interface UiServerOptions {
   readonly store: UiTargetStore;
-  readonly adapter: UiSearchAdapter;
+  readonly adapter: UiAdapter;
   readonly status: () => Promise<UiRuntimeStatus>;
   readonly host?: string;
   readonly port?: number;
@@ -257,6 +312,35 @@ export class UiServer {
       sendJson(response, 200, { ok: true, results: results.results });
       return;
     }
+    if (method === "POST" && path === "/api/probe") {
+      this.assertJsonMutation(request);
+      const body = await readJsonBody(request);
+      const payload = ProbeRequestSchema.safeParse(body);
+      if (!payload.success) {
+        throw new HttpError(400, "Availability probe is invalid", {
+          issues: zodIssues(payload.error),
+        });
+      }
+      sendJson(response, 200, { ok: true, probe: await this.probe(payload.data) });
+      return;
+    }
+    if (method === "POST" && path === "/api/preview") {
+      this.assertJsonMutation(request);
+      const body = await readJsonBody(request);
+      if (!isRecord(body)) throw new HttpError(400, "Request body must be a JSON object");
+      const selection = PreviewSelectionSchema.safeParse(body);
+      if (!selection.success) {
+        throw new HttpError(400, "Preview selection is invalid", {
+          issues: zodIssues(selection.error),
+        });
+      }
+      const target = this.parseTarget(isRecord(body.target) ? body.target : body);
+      sendJson(response, 200, {
+        ok: true,
+        preview: await this.preview(target, selection.data),
+      });
+      return;
+    }
     if (method === "GET" && path === "/api/targets") {
       const records = await this.options.store.list();
       sendJson(response, 200, {
@@ -271,21 +355,11 @@ export class UiServer {
       this.assertJsonMutation(request);
       const body = await readJsonBody(request);
       if (!isRecord(body)) throw new HttpError(400, "Request body must be a JSON object");
-      const raw = isRecord(body.target) ? body.target : body;
-      const identifier =
-        typeof raw.id === "string" && raw.id.trim() !== ""
-          ? raw.id.trim()
-          : `task-${randomUUID()}`;
-      const parsed = BookingTargetSchema.safeParse({ ...raw, id: identifier });
-      if (!parsed.success) {
-        throw new HttpError(400, "Task definition is invalid", {
-          issues: zodIssues(parsed.error),
-        });
-      }
+      const target = this.parseTarget(isRecord(body.target) ? body.target : body);
       const timestamp = this.now().toISOString();
       const saved = await this.options.store.save(
         {
-          target: parsed.data,
+          target,
           state: body.arm === true ? TargetState.ARMED : TargetState.DRAFT,
           version: 0,
           createdAt: timestamp,
@@ -339,6 +413,38 @@ export class UiServer {
       return;
     }
 
+    const edit = /^\/api\/targets\/([^/]+)$/.exec(path);
+    if (method === "PUT" && edit !== null) {
+      this.assertJsonMutation(request);
+      const targetId = decodeURIComponent(edit[1] ?? "");
+      const body = await readJsonBody(request);
+      if (!isRecord(body)) throw new HttpError(400, "Request body must be a JSON object");
+      const record = await this.options.store.get(targetId);
+      if (record === undefined) {
+        throw new HttpError(404, `Target ${targetId} was not found`);
+      }
+      if (!EDITABLE_TARGET_STATES.includes(record.state)) {
+        throw new HttpError(409, `Cannot edit a target in state ${record.state}`, {
+          reason: "NOT_EDITABLE",
+          state: record.state,
+        });
+      }
+      const raw = isRecord(body.target) ? body.target : body;
+      const target = this.parseTarget({ ...raw, id: targetId });
+      const saved = await this.options.store.save(
+        {
+          target,
+          state: record.state,
+          version: record.version,
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+        },
+        typeof body.version === "number" ? body.version : record.version,
+      );
+      sendJson(response, 200, { ok: true, target: saved });
+      return;
+    }
+
     const removal = /^\/api\/targets\/([^/]+)$/.exec(path);
     if (method === "DELETE" && removal !== null) {
       this.assertJsonMutation(request);
@@ -357,6 +463,135 @@ export class UiServer {
     }
 
     throw new HttpError(404, `Unknown endpoint: ${method} ${path}`);
+  }
+
+  private parseTarget(raw: Record<string, unknown>): BookingTarget {
+    const identifier =
+      typeof raw.id === "string" && raw.id.trim() !== ""
+        ? raw.id.trim()
+        : `task-${randomUUID()}`;
+    const parsed = BookingTargetSchema.safeParse({ ...raw, id: identifier });
+    if (!parsed.success) {
+      throw new HttpError(400, "Task definition is invalid", {
+        issues: zodIssues(parsed.error),
+      });
+    }
+    return parsed.data;
+  }
+
+  /**
+   * Reads what the restaurant actually offers for one date and party: the
+   * available times and the provider's own dining areas. The probe policy
+   * cannot authorize a booking, so this stays a read.
+   */
+  private async probe(
+    request: z.infer<typeof ProbeRequestSchema>,
+  ): Promise<{
+    readonly times: readonly string[];
+    readonly diningAreas: readonly DiningAreaOption[];
+    readonly options: readonly {
+      readonly time: string;
+      readonly label: string;
+      readonly category: string;
+      readonly reservationKind: string;
+    }[];
+  }> {
+    const target = this.parseTarget({
+      id: "probe",
+      restaurant: {
+        id: request.restaurantId,
+        name: request.restaurantName,
+        timeZone: request.timeZone,
+      },
+      dateRange: { startDate: request.date, endDate: request.date },
+      partySize: request.partySize,
+      timeWindow: {
+        earliest: request.earliest,
+        latest: request.latest,
+        preferred: request.preferred,
+      },
+      diningAreaPolicy: { mode: "any", selection: "provider-order" },
+      bookingPolicy: PROBE_BOOKING_POLICY,
+      mode: "cancellation-watch",
+    });
+    const slots = await this.options.adapter.findSlots(target);
+    const areas = new Map<string, DiningAreaOption>();
+    for (const slot of slots) {
+      if (slot.diningArea === undefined) continue;
+      const key = `${slot.diningArea.category}|${slot.diningArea.label}`;
+      const existing = areas.get(key);
+      if (
+        existing === undefined ||
+        slot.diningArea.providerOrder < existing.providerOrder
+      ) {
+        areas.set(key, slot.diningArea);
+      }
+    }
+    return {
+      times: [...new Set(slots.map((slot) => slot.localTime))].sort(),
+      diningAreas: [...areas.values()].sort(
+        (left, right) =>
+          left.providerOrder - right.providerOrder ||
+          left.label.localeCompare(right.label),
+      ),
+      options: slots
+        .filter((slot) => slot.diningArea !== undefined)
+        .map((slot) => ({
+          time: slot.localTime,
+          label: slot.diningArea?.label ?? "",
+          category: slot.diningArea?.category ?? "unknown",
+          reservationKind: slot.reservationKind.kind,
+        }))
+        .sort(
+          (left, right) =>
+            left.time.localeCompare(right.time) || left.label.localeCompare(right.label),
+        ),
+    };
+  }
+
+  /**
+   * Runs the engine's read-only path for one candidate time and reports the
+   * exact terms plus the policy decision, so an operator can see a fail-closed
+   * rejection before the drop instead of at it.
+   */
+  private async preview(
+    target: BookingTarget,
+    selection: z.infer<typeof PreviewSelectionSchema>,
+  ): Promise<{
+    readonly terms: BookingPreview;
+    readonly allowed: boolean;
+    readonly reasons: readonly string[];
+    readonly time: string;
+    readonly diningArea?: DiningAreaOption;
+  }> {
+    const time = selection.time ?? target.timeWindow.preferred;
+    const narrowed: BookingTarget = {
+      ...target,
+      timeWindow: { earliest: time, latest: time, preferred: time },
+    };
+    const slots = await this.options.adapter.findSlots(narrowed);
+    const slot =
+      selection.diningAreaLabel === undefined
+        ? slots[0]
+        : slots.find((candidate) => candidate.diningArea?.label === selection.diningAreaLabel);
+    if (slot === undefined) {
+      throw new HttpError(
+        409,
+        selection.diningAreaLabel === undefined
+          ? `No slot at ${time} matched this task's policy`
+          : `No ${selection.diningAreaLabel} slot at ${time} matched this task's policy`,
+        { reason: "NO_MATCHING_SLOT" },
+      );
+    }
+    const terms = await this.options.adapter.getBookingPreview(target, slot);
+    const evaluation = evaluateBookingPreview(target, slot, terms);
+    return {
+      terms,
+      allowed: evaluation.allowed,
+      reasons: evaluation.allowed ? [] : evaluation.reasons,
+      time: slot.localTime,
+      ...(slot.diningArea === undefined ? {} : { diningArea: slot.diningArea }),
+    };
   }
 
   /**

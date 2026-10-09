@@ -2,30 +2,44 @@ import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { BookingTarget } from "../src/domain/booking-target.js";
+import type {
+  BookingPreview,
+  ReservationSlot,
+} from "../src/domain/reservation-slot.js";
 import { AdapterFailureCategory, OpenTableAdapterError } from "../src/opentable/errors.js";
 import type { RestaurantSearchQuery } from "../src/opentable/adapter.js";
 import type { SafeSearchResults } from "../src/opentable/browser/search-types.js";
 import { FileTargetStore } from "../src/storage/file-target-store.js";
 import { UiServer, type UiRuntimeStatus } from "../src/ui/server.js";
-import { makeTarget } from "./fixtures.js";
+import { makePreview, makeSlot, makeTarget } from "./fixtures.js";
 
 interface Harness {
   readonly address: { readonly url: string };
   readonly store: FileTargetStore;
   readonly search: ReturnType<typeof vi.fn>;
+  readonly findSlots: ReturnType<typeof vi.fn>;
+  readonly getBookingPreview: ReturnType<typeof vi.fn>;
   readonly close: () => Promise<void>;
+}
+
+interface HarnessOverrides {
+  readonly search?: (query: RestaurantSearchQuery) => Promise<SafeSearchResults>;
+  readonly findSlots?: (target: BookingTarget) => Promise<readonly ReservationSlot[]>;
+  readonly getBookingPreview?: (
+    target: BookingTarget,
+    slot: ReservationSlot,
+  ) => Promise<BookingPreview>;
 }
 
 const running: Harness[] = [];
 
-async function startHarness(
-  searchImpl?: (query: RestaurantSearchQuery) => Promise<SafeSearchResults>,
-): Promise<Harness> {
+async function startHarness(overrides: HarnessOverrides = {}): Promise<Harness> {
   const store = new FileTargetStore({
     directory: await mkdtemp(path.join(os.tmpdir(), "otb-ui-")),
   });
   const search = vi.fn(
-    searchImpl ??
+    overrides.search ??
       (async (): Promise<SafeSearchResults> => ({
         results: [
           {
@@ -37,9 +51,16 @@ async function startHarness(
         ],
       })),
   );
+  const findSlots = vi.fn(
+    overrides.findSlots ?? (async (): Promise<readonly ReservationSlot[]> => [makeSlot()]),
+  );
+  const getBookingPreview = vi.fn(
+    overrides.getBookingPreview ??
+      (async (): Promise<BookingPreview> => makePreview()),
+  );
   const server = new UiServer({
     store,
-    adapter: { searchRestaurants: search },
+    adapter: { searchRestaurants: search, findSlots, getBookingPreview },
     status: async (): Promise<UiRuntimeStatus> => ({
       bridgeReachable: true,
       authenticated: true,
@@ -53,10 +74,26 @@ async function startHarness(
     address,
     store,
     search,
+    findSlots,
+    getBookingPreview,
     close: () => server.close(),
   };
   running.push(harness);
   return harness;
+}
+
+function probeBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    restaurantId: "70204",
+    restaurantName: "Catch New York",
+    timeZone: "America/New_York",
+    date: "2026-09-01",
+    partySize: 2,
+    earliest: "17:00",
+    latest: "21:00",
+    preferred: "19:00",
+    ...overrides,
+  };
 }
 
 afterEach(async () => {
@@ -75,6 +112,14 @@ function jsonPost(
   return fetch(harness.address.url + urlPath, {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+function jsonPut(harness: Harness, urlPath: string, body: unknown): Promise<Response> {
+  return fetch(harness.address.url + urlPath, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
 }
@@ -129,11 +174,13 @@ describe("UiServer", () => {
   });
 
   it("maps a missing browser session to a conflict", async () => {
-    const harness = await startHarness(async () => {
-      throw new OpenTableAdapterError(
-        AdapterFailureCategory.AUTHENTICATION_REQUIRED,
-        "Sign in to OpenTable",
-      );
+    const harness = await startHarness({
+      search: async () => {
+        throw new OpenTableAdapterError(
+          AdapterFailureCategory.AUTHENTICATION_REQUIRED,
+          "Sign in to OpenTable",
+        );
+      },
     });
     const response = await fetch(`${harness.address.url}/api/search?term=Catch`);
     expect(response.status).toBe(409);
@@ -144,11 +191,13 @@ describe("UiServer", () => {
   });
 
   it("maps a transient transport failure to an unavailable service", async () => {
-    const harness = await startHarness(async () => {
-      throw new OpenTableAdapterError(
-        AdapterFailureCategory.TRANSIENT_TRANSPORT,
-        "Bridge connection closed",
-      );
+    const harness = await startHarness({
+      search: async () => {
+        throw new OpenTableAdapterError(
+          AdapterFailureCategory.TRANSIENT_TRANSPORT,
+          "Bridge connection closed",
+        );
+      },
     });
     const response = await fetch(`${harness.address.url}/api/search?term=Catch`);
     expect(response.status).toBe(503);
@@ -288,6 +337,243 @@ describe("UiServer", () => {
     expect(missing.status).toBe(404);
   });
 
+  it("edits a task definition while preserving its state", async () => {
+    const harness = await startHarness();
+    await jsonPost(harness, "/api/targets", { target: makeTarget() });
+
+    const response = await jsonPut(harness, "/api/targets/target-1", {
+      target: { ...makeTarget(), partySize: 4 },
+      version: 1,
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      readonly target: {
+        readonly version: number;
+        readonly state: string;
+        readonly target: { readonly id: string; readonly partySize: number };
+      };
+    };
+    expect(payload.target.version).toBe(2);
+    expect(payload.target.state).toBe("DRAFT");
+    expect(payload.target.target.id).toBe("target-1");
+    expect(payload.target.target.partySize).toBe(4);
+  });
+
+  it("clears a stale pause reason when a paused task is edited or re-armed", async () => {
+    const harness = await startHarness();
+    await jsonPost(harness, "/api/targets", { target: makeTarget(), arm: true });
+    const paused = await jsonPost(harness, "/api/targets/target-1/state", {
+      action: "pause",
+      version: 1,
+    });
+    expect(paused.status).toBe(200);
+
+    const edited = await jsonPut(harness, "/api/targets/target-1", {
+      target: { ...makeTarget(), partySize: 6 },
+      version: 2,
+    });
+    expect(edited.status).toBe(200);
+    const editedPayload = (await edited.json()) as {
+      readonly target: { readonly state: string; readonly pauseReason?: string };
+    };
+    expect(editedPayload.target.state).toBe("PAUSED");
+    expect(editedPayload.target.pauseReason).toBeUndefined();
+
+    const rearmed = await jsonPost(harness, "/api/targets/target-1/state", {
+      action: "arm",
+      version: 3,
+    });
+    expect(rearmed.status).toBe(200);
+    const rearmedPayload = (await rearmed.json()) as {
+      readonly target: { readonly state: string; readonly pauseReason?: string };
+    };
+    expect(rearmedPayload.target.state).toBe("ARMED");
+    expect(rearmedPayload.target.pauseReason).toBeUndefined();
+  });
+
+  it("refuses to edit a task that is already booking or booked", async () => {
+    const harness = await startHarness();
+    await harness.store.save(
+      {
+        target: makeTarget(),
+        state: "BOOKED",
+        version: 0,
+        createdAt: "2026-10-01T00:00:00.000Z",
+        updatedAt: "2026-10-01T00:00:00.000Z",
+      },
+      0,
+    );
+    const response = await jsonPut(harness, "/api/targets/target-1", {
+      target: { ...makeTarget(), partySize: 4 },
+      version: 1,
+    });
+    expect(response.status).toBe(409);
+    const payload = (await response.json()) as {
+      readonly error: { readonly reason: string };
+    };
+    expect(payload.error.reason).toBe("NOT_EDITABLE");
+  });
+
+  it("rejects an edit at a stale version", async () => {
+    const harness = await startHarness();
+    await jsonPost(harness, "/api/targets", { target: makeTarget() });
+    const response = await jsonPut(harness, "/api/targets/target-1", {
+      target: { ...makeTarget(), partySize: 4 },
+      version: 0,
+    });
+    expect(response.status).toBe(409);
+    const payload = (await response.json()) as {
+      readonly error: { readonly reason: string };
+    };
+    expect(payload.error.reason).toBe("VERSION_CONFLICT");
+  });
+
+  // The probe is a read: it reports what the restaurant offers so the console
+  // can offer real times and real dining areas instead of free-text guesses.
+  it("probes real availability and dining areas for a date", async () => {
+    const harness = await startHarness({
+      findSlots: async () => [
+        makeSlot({
+          id: "slot-a",
+          localTime: "18:30",
+          diningArea: { category: "dining-room", label: "Dining Room", providerOrder: 0 },
+        }),
+        makeSlot({
+          id: "slot-b",
+          localTime: "19:00",
+          diningArea: { category: "terrace", label: "Sky Terrace", providerOrder: 1 },
+        }),
+        makeSlot({
+          id: "slot-c",
+          localTime: "18:30",
+          diningArea: { category: "bar", label: "Bar", providerOrder: 2 },
+        }),
+      ],
+    });
+
+    const response = await jsonPost(harness, "/api/probe", probeBody());
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      readonly probe: {
+        readonly times: readonly string[];
+        readonly diningAreas: readonly { readonly label: string }[];
+        readonly options: readonly {
+          readonly time: string;
+          readonly label: string;
+        }[];
+      };
+    };
+    expect(payload.probe.times).toEqual(["18:30", "19:00"]);
+    expect(payload.probe.diningAreas.map((area) => area.label)).toEqual([
+      "Dining Room",
+      "Sky Terrace",
+      "Bar",
+    ]);
+    expect(payload.probe.options.map((option) => `${option.time} ${option.label}`)).toEqual([
+      "18:30 Bar",
+      "18:30 Dining Room",
+      "19:00 Sky Terrace",
+    ]);
+
+    const probeTarget = harness.findSlots.mock.calls[0]?.[0] as BookingTarget;
+    expect(probeTarget.diningAreaPolicy).toEqual({
+      mode: "any",
+      selection: "provider-order",
+    });
+    expect(probeTarget.bookingPolicy.autoBookAuthorized).toBe(false);
+    expect(probeTarget.dateRange).toEqual({
+      startDate: "2026-09-01",
+      endDate: "2026-09-01",
+    });
+    expect(probeTarget.timeWindow).toEqual({
+      earliest: "17:00",
+      latest: "21:00",
+      preferred: "19:00",
+    });
+  });
+
+  it("rejects an invalid availability probe", async () => {
+    const harness = await startHarness();
+    const response = await jsonPost(harness, "/api/probe", probeBody({ partySize: 0 }));
+    expect(response.status).toBe(400);
+    expect(harness.findSlots).not.toHaveBeenCalled();
+  });
+
+  it("previews booking terms and allows an authorized booking", async () => {
+    const harness = await startHarness();
+    const response = await jsonPost(harness, "/api/preview", {
+      target: makeTarget(),
+      time: "19:00",
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      readonly preview: {
+        readonly allowed: boolean;
+        readonly reasons: readonly string[];
+        readonly time: string;
+        readonly diningArea?: { readonly label: string };
+        readonly terms: { readonly prepaid: { readonly status: string } };
+      };
+    };
+    expect(payload.preview.allowed).toBe(true);
+    expect(payload.preview.reasons).toEqual([]);
+    expect(payload.preview.time).toBe("19:00");
+    expect(payload.preview.diningArea?.label).toBe("Dining Room");
+    expect(payload.preview.terms.prepaid.status).toBe("not-required");
+  });
+
+  it("previews the exact policy reasons that would stop a booking", async () => {
+    const harness = await startHarness({
+      getBookingPreview: async () =>
+        makePreview({ prepaid: { status: "required-known", amountCents: 50_000 } }),
+    });
+    const response = await jsonPost(harness, "/api/preview", {
+      target: makeTarget(),
+      time: "19:00",
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      readonly preview: {
+        readonly allowed: boolean;
+        readonly reasons: readonly string[];
+      };
+    };
+    expect(payload.preview.allowed).toBe(false);
+    expect(payload.preview.reasons).toContain("PREPAID_AMOUNT_EXCEEDS_AUTHORIZATION");
+  });
+
+  it("reports an unauthorized task as a preview rejection", async () => {
+    const harness = await startHarness();
+    const target = makeTarget();
+    const response = await jsonPost(harness, "/api/preview", {
+      target: {
+        ...target,
+        bookingPolicy: { ...target.bookingPolicy, autoBookAuthorized: false },
+      },
+      time: "19:00",
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      readonly preview: { readonly allowed: boolean; readonly reasons: readonly string[] };
+    };
+    expect(payload.preview.allowed).toBe(false);
+    expect(payload.preview.reasons).toContain("AUTO_BOOK_NOT_AUTHORIZED");
+  });
+
+  it("reports a missing slot as a conflict during preview", async () => {
+    const harness = await startHarness({ findSlots: async () => [] });
+    const response = await jsonPost(harness, "/api/preview", {
+      target: makeTarget(),
+      time: "19:00",
+    });
+    expect(response.status).toBe(409);
+    const payload = (await response.json()) as {
+      readonly error: { readonly reason: string };
+    };
+    expect(payload.error.reason).toBe("NO_MATCHING_SLOT");
+    expect(harness.getBookingPreview).not.toHaveBeenCalled();
+  });
+
   // The server rejects non-JSON mutations, so the console must set the header on
   // every mutation, including bodyless ones such as DELETE.
   it("serves a console that sends JSON on bodyless mutations", async () => {
@@ -295,6 +581,39 @@ describe("UiServer", () => {
     const html = await (await fetch(`${harness.address.url}/`)).text();
     expect(html).toContain('(init.method || "GET") !== "GET"');
     expect(html).toContain('init.headers = { "content-type": "application/json" };');
+  });
+
+  // The console's JavaScript is served as one opaque template, so assert the
+  // features it must wire up rather than rendering the page.
+  it("serves a console with typeahead, availability, preview, and editing", async () => {
+    const harness = await startHarness();
+    const html = await (await fetch(`${harness.address.url}/`)).text();
+    expect(html).toContain('id="search-suggestions"');
+    expect(html).toContain("scheduleTypeahead");
+    expect(html).toContain('api("/api/probe"');
+    expect(html).toContain('api("/api/preview"');
+    expect(html).toContain('method: "PUT"');
+    expect(html).toContain("Check availability");
+    expect(html).toContain("Preview terms");
+    expect(html).toContain("Edit");
+    // No template-literal syntax: the file is a String.raw template.
+    expect(html).not.toContain("${");
+  });
+
+  // The console reads state out of the DOM by id, and nothing else checks that
+  // those ids exist in the markup, so a renamed or dropped element silently
+  // breaks a whole control.
+  it("serves a console whose every byId target exists in the markup", async () => {
+    const harness = await startHarness();
+    const html = await (await fetch(`${harness.address.url}/`)).text();
+    const referenced = new Set(
+      [...html.matchAll(/byId\("([^"]+)"\)/gu)].map((match) => match[1] ?? ""),
+    );
+    const declared = new Set(
+      [...html.matchAll(/id="([^"]+)"/gu)].map((match) => match[1] ?? ""),
+    );
+    expect(referenced.size).toBeGreaterThan(20);
+    expect([...referenced].filter((id) => !declared.has(id))).toEqual([]);
   });
 
   it("requires a JSON content type for mutations", async () => {

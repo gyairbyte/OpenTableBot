@@ -101,10 +101,27 @@ and price band. Non-OpenTable links, provider state, availability tokens, and
 unrecognized fields are dropped inside Chrome.
 
 The operator console (`src/ui`) is a loopback HTTP server that exposes search,
-version-guarded target CRUD, and scheduler status, and embeds the same
-`ReservationScheduler` tick loop the CLI runs. It adds no provider capability:
-every page interaction still travels through the bridge, and the console's
-booking mode is fixed when the process starts.
+an availability probe, a terms preview, version-guarded target CRUD, and
+scheduler status, and embeds the same `ReservationScheduler` tick loop the CLI
+runs. It adds no provider capability: every page interaction still travels
+through the bridge, and the console's booking mode is fixed when the process
+starts.
+
+The probe and preview routes reuse the engine's read path under a policy that
+cannot authorize anything, so a page that can reach the loopback socket still
+cannot escalate itself into a write:
+
+```text
+POST /api/probe   -> findSlots under PROBE_BOOKING_POLICY (autoBookAuthorized: false)
+                     -> available times + provider dining areas + (time, area) options
+POST /api/preview -> findSlots narrowed to one time -> getBookingPreview
+                     -> evaluateBookingPreview -> exact terms + allowed | rejection reasons
+```
+
+Editing is a `PUT /api/targets/:id` that rewrites the stored definition while
+keeping the record's state and version chain. Mid-flight and terminal states are
+refused, and the write still goes through the store's version check, so an edit
+can never change the terms of a booking that is already in progress.
 
 ## Permission rationale
 

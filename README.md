@@ -128,7 +128,11 @@ npm run opentable:ui
 
 It serves `http://127.0.0.1:8790` and, like the CLI, needs the bridge running
 and a signed-in OpenTable tab open. Without `--execute` every scheduled run is
-a dry run. See [Scheduling a known drop](docs/SCHEDULING.md#operator-console).
+a dry run. The console searches restaurants with typeahead, checks live
+availability so you can pick real times and real dining areas, previews the
+booking terms and the fail-closed policy decision before a drop, and lets you
+edit, arm, pause, and delete tasks. See
+[Scheduling a known drop](docs/SCHEDULING.md#operator-console).
 
 Stop the bridge with Ctrl+C. Revoke an existing pairing with:
 

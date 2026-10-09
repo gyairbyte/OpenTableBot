@@ -113,16 +113,39 @@ npm run opentable:ui -- --port 8891 --execute
 
 The console lets you:
 
-- search restaurants through the paired Chrome tab and copy a result into the
-  task form (the search is a read-only page request; no provider internals or
-  page state leave Chrome, only the bounded fields in `SafeSearchResults`);
+- search restaurants through the paired Chrome tab with typeahead suggestions,
+  then load a result into the task form (the search is a read-only page request;
+  no provider internals or page state leave Chrome, only the bounded fields in
+  `SafeSearchResults`);
+- check live availability for a date and party size, which lists the times and
+  the dining areas the restaurant actually offers. Clicking a time sets the
+  preferred time, and ticking a dining area builds the allow or prefer policy
+  from the provider's real labels instead of guessing at them;
+- preview the exact booking terms for a candidate slot and see the fail-closed
+  policy decision, including each rejection reason, before the drop instead of
+  at it;
 - create a task from the same `BookingTarget` fields the state file uses,
   including the dining-area policy, the fail-closed booking policy, and
   `knownReservationReleaseAt`, saved as `DRAFT` or `ARMED`;
+- edit an existing task in place. Edit reloads the record into the form and
+  saves with a `PUT` guarded by the stored version, so a concurrent scheduler
+  write still loses to the conflict check. Tasks that are mid-flight
+  (`MATCH_FOUND` through `SUBMITTING`) or terminal (`BOOKED`,
+  `OUTCOME_UNKNOWN`) cannot be edited, and an edit never changes a task's state;
 - arm, pause, and delete tasks, each guarded by the stored record version so a
   concurrent scheduler write cannot be clobbered;
 - watch bridge reachability, session authentication, the booking mode, and the
   last scheduler pass.
+
+Both the availability check and the terms preview are reads. They run
+`findSlots` and `getBookingPreview` under a probe policy with
+`autoBookAuthorized: false` and zero spending caps, so neither can authorize or
+submit a reservation no matter what the page returns.
+
+The availability check replays the restaurant page's own availability request,
+so the paired Chrome tab must have visited that restaurant page first. If the
+probe answers "The RestaurantsAvailability operation has not been observed on
+this page", open the restaurant in Chrome and probe again.
 
 The embedded scheduler ticks on the same interval as the CLI and never overlaps
 passes. Mode is fixed when the process starts: a dry-run console cannot submit a
