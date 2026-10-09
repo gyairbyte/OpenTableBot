@@ -126,6 +126,8 @@ can never change the terms of a booking that is already in progress.
 ## Permission rationale
 
 - `storage`: retain the random local bridge credential and configured port.
+- `alarms`: wake the paired MV3 service worker so a transport reconnect is not
+  lost when an in-memory timer is discarded.
 - `https://www.opentable.com/*`: run the two bridge scripts only on OpenTable's
   canonical web origin.
 - `http://127.0.0.1/*`: permit the extension's WebSocket connection to the
@@ -202,8 +204,9 @@ Extension-initiated WebSocket closure uses browser-valid codes only: `1000` for
 normal pairing completion and private application code `4008` for malformed or
 unsupported protocol input. Node may still send standard RFC status code `1008`
 from the server side. A stopped local bridge remains an ordinary transport
-failure: the extension supplies no application close code, the existing close
-handler schedules one reconnect timer, and no authentication or lock safety is
+failure: the extension supplies no application close code. A quick in-memory
+retry is backed by a repeating `chrome.alarms` event, which can wake the service
+worker after its timer has been discarded; no authentication or lock safety is
 weakened.
 
 ## Adapter separation

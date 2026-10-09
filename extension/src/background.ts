@@ -41,6 +41,11 @@ import {
   closeExtensionSocket,
 } from "./websocket-close-codes.js";
 import { parseActivePage } from "./active-page.js";
+import {
+  createReconnectScheduler,
+  RECONNECT_ALARM_NAME,
+  RECONNECT_ALARM_PERIOD_MINUTES,
+} from "./reconnect.js";
 
 const STORAGE_CREDENTIAL = "bridgeCredential";
 const STORAGE_PORT = "bridgePort";
@@ -53,7 +58,6 @@ interface ExtensionState {
   authenticated: boolean;
   activeTabId: number | undefined;
   activePageUrl: string | undefined;
-  reconnectTimer: number | undefined;
   heartbeatTimer: number | undefined;
 }
 
@@ -63,10 +67,21 @@ const state: ExtensionState = {
   authenticated: false,
   activeTabId: undefined,
   activePageUrl: undefined,
-  reconnectTimer: undefined,
   heartbeatTimer: undefined,
 };
 const activeLockOperationIds = new Map<string, number>();
+const reconnectScheduler = createReconnectScheduler({
+  hasCredential: () => state.credential !== undefined,
+  connect: () => connect(),
+  setTimeout: (callback, delayMs) => self.setTimeout(callback, delayMs),
+  ensureAlarm: () => {
+    void chrome.alarms
+      .create(RECONNECT_ALARM_NAME, {
+        periodInMinutes: RECONNECT_ALARM_PERIOD_MINUTES,
+      })
+      .catch(() => undefined);
+  },
+});
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -511,14 +526,6 @@ function handleBridgeMessage(raw: string): void {
   ) void forwardControlledWrite(message);
 }
 
-function scheduleReconnect(): void {
-  if (state.credential === undefined || state.reconnectTimer !== undefined) return;
-  state.reconnectTimer = self.setTimeout(() => {
-    state.reconnectTimer = undefined;
-    connect();
-  }, 1_500);
-}
-
 export function connect(): void {
   if (state.credential === undefined) return;
   if (state.socket?.readyState === WebSocket.OPEN || state.socket?.readyState === WebSocket.CONNECTING) return;
@@ -546,7 +553,7 @@ export function connect(): void {
     state.heartbeatTimer = undefined;
     for (const operationId of activeLockOperationIds.keys()) void abandonLockOperation(operationId);
     activeLockOperationIds.clear();
-    scheduleReconnect();
+    reconnectScheduler.schedule();
   });
   socket.addEventListener("error", () => closeAfterTransportError(socket));
 }
@@ -580,6 +587,7 @@ async function pair(code: string, port: number): Promise<void> {
             .then(() => {
               state.credential = message.credential;
               state.port = port;
+              reconnectScheduler.ensureAlarm();
               resolve();
             }, reject);
         }
@@ -595,11 +603,22 @@ async function pair(code: string, port: number): Promise<void> {
 }
 
 if (typeof chrome !== "undefined" && chrome.runtime?.onMessage !== undefined) {
-  void chrome.storage.local.get([STORAGE_CREDENTIAL, STORAGE_PORT]).then(async (stored) => {
+  async function initializeConnection(): Promise<void> {
+    const stored = await chrome.storage.local.get([STORAGE_CREDENTIAL, STORAGE_PORT]);
     if (typeof stored[STORAGE_CREDENTIAL] === "string") state.credential = stored[STORAGE_CREDENTIAL];
     if (typeof stored[STORAGE_PORT] === "number") state.port = stored[STORAGE_PORT];
     await restoreActivePage();
+    reconnectScheduler.ensureAlarm();
     connect();
+  }
+
+  void initializeConnection();
+  chrome.runtime.onStartup.addListener(() => {
+    void initializeConnection();
+  });
+
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    reconnectScheduler.handleAlarm(alarm.name);
   });
 
   chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {

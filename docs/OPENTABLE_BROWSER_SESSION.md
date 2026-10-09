@@ -100,8 +100,11 @@ Candidate selection previews options in deterministic order and never locks.
 
 - Bridge offline: restart `npm run opentable:bridge`; the stored credential is
   reused and the extension reconnects.
-- Extension not connected: confirm the bridge is running on port 38471, reload
-  the unpacked extension, and inspect its popup status.
+- Extension not connected: confirm the bridge is running on port 38471, then
+  inspect the popup status. The extension keeps a repeating MV3 alarm as a
+  wake-up fallback, so a stopped bridge normally reconnects without a manual
+  reload. Reload the unpacked extension if it was updated or the popup still
+  reports it as paired but disconnected.
 - Page operation unavailable: reload/visit a normal restaurant availability
   page and perform an ordinary search so `RestaurantsAvailability` is observed.
 - Pairing lost or suspected credential exposure: stop the bridge and run

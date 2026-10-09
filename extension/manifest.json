@@ -3,7 +3,7 @@
   "name": "OpenTableBot Read-Only Bridge",
   "version": "0.1.0",
   "description": "Pairs normal Chrome with the local OpenTableBot read-only bridge.",
-  "permissions": ["storage"],
+  "permissions": ["storage", "alarms"],
   "host_permissions": ["https://www.opentable.com/*", "http://127.0.0.1/*"],
   "background": {
     "service_worker": "background.js"
