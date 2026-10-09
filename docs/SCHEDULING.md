@@ -118,11 +118,12 @@ npm run opentable:ui
 npm run opentable:ui -- --port 8891 --execute
 ```
 
-The console needs the bridge running as well. For a one-command start (and the
-desktop icons), see [Desktop icons](README.md#desktop-icons) in the README:
-`scripts/start-opentable.ps1` brings up the bridge and console together and
-`scripts/stop-opentable.ps1` shuts them down, refusing while an unattended run
-holds the scheduler lock.
+The console needs the bridge and an eligible OpenTable tab running as well. For
+a one-command start (and the desktop icons), see
+[Desktop icons](README.md#desktop-icons) in the README:
+`scripts/start-opentable.ps1` brings up the bridge, opens OpenTable in Chrome,
+and starts the console together. `scripts/stop-opentable.ps1` shuts them down,
+refusing while an unattended run holds the scheduler lock.
 
 The console lets you:
 

@@ -152,10 +152,12 @@ Two launchers wrap that, and both are what the desktop icons run:
 ```
 
 `start-opentable.ps1` skips whatever is already listening, waits for both ports,
-reports bridge and session state, and opens the console page. It defaults to
-DRY_RUN; pass `-Execute` to let armed tasks submit real reservations, which is
-fixed when the process starts. It also starts the bridge that the scheduled
-drop needs, so a drop triggered while it is running finds a live bridge.
+opens a normal signed-in OpenTable tab for the extension, reports bridge and
+session state, and opens the console page. It defaults to DRY_RUN; pass
+`-Execute` to let armed tasks submit real reservations, which is fixed when the
+process starts. Use `-NoOpenTable` only if you already have an eligible
+OpenTable tab open. It also starts the bridge that the scheduled drop needs, so
+a drop triggered while it is running finds a live bridge.
 
 `stop-opentable.ps1` refuses to stop the bridge while an unattended scheduled
 run holds the scheduler lock, because that could abandon a reservation

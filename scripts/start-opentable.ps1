@@ -7,7 +7,8 @@
 
     1. the local bridge (unless something is already listening on its port);
     2. the operator console on the loopback port;
-    3. the console page in your default browser.
+    3. a normal Chrome tab on OpenTable so the extension has an eligible page;
+    4. the console page in your default browser.
 
   Both processes run hidden and log to .local/logs. Stop them with
   stop-opentable.ps1, which is what the "Stop OpenTable" desktop icon runs.
@@ -29,6 +30,9 @@
   .\start-opentable.ps1 -Execute -NoBrowser
 
 .EXAMPLE
+  .\start-opentable.ps1 -NoOpenTable
+
+.EXAMPLE
   # What the desktop icon runs: keep a failed start on screen
   .\start-opentable.ps1 -HoldOnError
 #>
@@ -37,6 +41,7 @@ param(
   [int]$BridgePort = 38471,
   [switch]$Execute,
   [switch]$NoBrowser,
+  [switch]$NoOpenTable,
   [switch]$NoConsole,
   [switch]$HoldOnError,
   [int]$WaitSeconds = 45
@@ -125,7 +130,20 @@ try {
     previousRecordPresent    = ($null -ne $existing)
   })
 
-  # 3. Report readiness, then open the console.
+  # 3. Open a normal Chrome OpenTable tab so the paired extension can bind an
+  #    eligible page. This is separate from the console browser below because
+  #    the console is not the page that owns the signed-in OpenTable session.
+  if (-not $NoBrowser -and -not $NoOpenTable) {
+    $chrome = Find-OpenTableChrome
+    if ($null -eq $chrome) {
+      $problems.Add("chrome.exe was not found. Open an OpenTable tab manually or install Chrome.")
+    } else {
+      Start-Process -FilePath $chrome -ArgumentList "https://www.opentable.com/" | Out-Null
+      Write-Host "Opened https://www.opentable.com/ in Chrome."
+    }
+  }
+
+  # 4. Report readiness, then open the console.
   Write-Host ""
   Write-Host "Booking mode: $mode"
   if ($Execute) {
