@@ -134,6 +134,19 @@ booking terms and the fail-closed policy decision before a drop, and lets you
 edit, arm, pause, and delete tasks. See
 [Scheduling a known drop](docs/SCHEDULING.md#operator-console).
 
+## Unattended drops
+
+You do not have to keep Chrome or the bridge open. `scripts/register-scheduled-task.ps1`
+registers a Windows task that wakes the machine before the release time and runs
+`scripts/run-scheduled.ps1`, which opens the restaurant page in your signed-in
+Chrome profile, starts the bridge if it is not already running, and waits for the
+extension and an eligible page to report ready. If the browser never becomes
+ready, the target is paused with the readiness reason instead of booking against
+a page that is not there.
+
+Only Chrome's OpenTable sign-in still needs a human, once. See
+[Unattended startup](docs/SCHEDULING.md#unattended-startup).
+
 Stop the bridge with Ctrl+C. Revoke an existing pairing with:
 
 ```sh

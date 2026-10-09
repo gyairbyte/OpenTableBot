@@ -89,6 +89,8 @@ export interface UiRuntimeStatus {
   readonly stateDirectory: string;
   readonly lastTickAt?: string;
   readonly lastTickError?: string;
+  /** Set when this console is deliberately not running targets. */
+  readonly schedulerSkippedReason?: string;
 }
 
 export interface UiServerOptions {

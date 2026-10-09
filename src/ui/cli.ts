@@ -3,6 +3,10 @@ import { BrowserBridgeOpenTableBookingAdapter } from "../opentable/bridge/bookin
 import { OpenTableBridgeClient } from "../opentable/bridge/client.js";
 import { loadCredential } from "../opentable/bridge/credential-store.js";
 import { DEFAULT_BRIDGE_PORT } from "../opentable/bridge/protocol.js";
+import {
+  DEFAULT_READINESS_INTERVAL_MS,
+  describeReadiness,
+} from "../opentable/bridge/readiness.js";
 import { OpenTableAdapterError } from "../opentable/errors.js";
 import { ControlledBookingEngine } from "../runner/controlled-booking-engine.js";
 import { ReservationScheduler } from "../runner/scheduler.js";
@@ -10,6 +14,10 @@ import {
   FileTargetStore,
   targetStateDirectory,
 } from "../storage/file-target-store.js";
+import {
+  describeSchedulerLock,
+  readSchedulerLock,
+} from "../storage/scheduler-lock.js";
 import { DEFAULT_UI_PORT, UiServer, type UiRuntimeStatus } from "./server.js";
 import { SchedulerTickLoop } from "./tick-loop.js";
 
@@ -67,6 +75,16 @@ function tickIntervalMs(flags: ReadonlyMap<string, string>): number {
   return seconds * 1_000;
 }
 
+function warmUpLeadMs(flags: ReadonlyMap<string, string>): number {
+  const raw = flags.get("warm-up-seconds");
+  if (raw === undefined) return 180_000;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw new Error("--warm-up-seconds must be a positive number");
+  }
+  return seconds * 1_000;
+}
+
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown operator console failure";
 }
@@ -86,12 +104,36 @@ async function main(): Promise<void> {
   const store = new FileTargetStore();
   const notifier = new LocalNotifier();
   const engine = new ControlledBookingEngine({ adapter, store, notifier }, { execute });
-  const scheduler = new ReservationScheduler(engine, adapter, store, notifier);
+  const scheduler = new ReservationScheduler(engine, adapter, store, notifier, {
+    warmUpLeadMs: warmUpLeadMs(flags),
+    readinessPollMs: DEFAULT_READINESS_INTERVAL_MS,
+    readiness: async () => {
+      const pong = await client.ping();
+      const ready = pong.extensionConnected && pong.pageReady;
+      return {
+        ready,
+        detail: describeReadiness({
+          ready,
+          attempts: 1,
+          extensionConnected: pong.extensionConnected,
+          pageReady: pong.pageReady,
+          ...(pong.pageUrl === undefined ? {} : { pageUrl: pong.pageUrl }),
+        }),
+      };
+    },
+  });
+  const stateDirectory = targetStateDirectory();
+  // The console never takes the scheduler lock, so it can never block an
+  // unattended drop. It stands down whenever another process owns the run.
   const loop = new SchedulerTickLoop(scheduler, {
     intervalMs: tickIntervalMs(flags),
     onError: (message) => console.warn(`Scheduler tick failed: ${message}`),
+    blockedBy: async () => {
+      const holder = await readSchedulerLock(stateDirectory);
+      if (holder === undefined || holder.pid === process.pid) return undefined;
+      return `An unattended scheduler owns this drop: ${describeSchedulerLock(holder)}. This console is not running targets.`;
+    },
   });
-  const stateDirectory = targetStateDirectory();
 
   try {
     await adapter.start();

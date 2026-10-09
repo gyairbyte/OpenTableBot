@@ -379,9 +379,10 @@ function loadStatus() {
     ];
     if (status.lastTickAt) parts.push("last scheduler check " + status.lastTickAt);
     if (status.lastTickError) parts.push("scheduler error " + status.lastTickError);
+    if (status.schedulerSkippedReason) parts.push(status.schedulerSkippedReason);
     var node = byId("status");
     node.textContent = parts.join("  |  ");
-    node.className = "status " + (status.bridgeReachable && status.authenticated ? "ok" : "warn");
+    node.className = "status " + (status.bridgeReachable && status.authenticated && !status.schedulerSkippedReason ? "ok" : "warn");
     var banner = byId("banner");
     if (status.mode === "execute") {
       banner.hidden = false;

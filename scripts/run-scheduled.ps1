@@ -3,10 +3,14 @@
   Warms up Chrome and runs the OpenTableBot scheduler for a known drop.
 
 .DESCRIPTION
-  Intended to be started about a minute before a reservation release time, either
+  Intended to be started a few minutes before a reservation release time, either
   by hand or by the task registered with register-scheduled-task.ps1. It opens the
   restaurant page in the user's normal signed-in Chrome profile, ensures the local
-  bridge is running, then runs the scheduler through the drop.
+  bridge is running, waits for the extension and an eligible page to report ready,
+  then runs the scheduler through the drop.
+
+  Chrome must already be signed in to OpenTable in the profile it opens. This
+  script starts Chrome and the bridge; it never signs in for you.
 
 .EXAMPLE
   .\run-scheduled.ps1 -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" -TargetId don-angie -Execute
@@ -16,7 +20,9 @@ param(
   [string]$TargetId = "",
   [switch]$Execute,
   [int]$BridgePort = 38471,
-  [int]$MaxRuntimeMinutes = 30
+  [int]$MaxRuntimeMinutes = 30,
+  [int]$WarmUpSeconds = 180,
+  [int]$ReadinessSeconds = 180
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,7 +53,8 @@ function Test-BridgeListening {
 }
 
 # 1. Open the restaurant page in the user's normal Chrome profile. When Chrome is
-#    already running this opens a tab in the existing instance.
+#    already running this opens a tab in the existing instance, which also starts
+#    the MV3 service worker so the extension reconnects to the bridge.
 $chrome = Find-Chrome
 Start-Process -FilePath $chrome -ArgumentList $RestaurantUrl | Out-Null
 Write-Host "Opened $RestaurantUrl in Chrome."
@@ -61,8 +68,14 @@ if (-not (Test-BridgeListening -Port $BridgePort)) {
   Write-Host "Local bridge already listening on port $BridgePort."
 }
 
-# 3. Run the scheduler through the drop and exit with its status.
-$schedulerArgs = @("run", "opentable:schedule", "--", "--max-runtime-minutes", "$MaxRuntimeMinutes")
+# 3. Run the scheduler through the drop. The scheduler itself waits for readiness
+#    before the release time and pauses with the reason rather than booking blind.
+$schedulerArgs = @(
+  "run", "opentable:schedule", "--",
+  "--max-runtime-minutes", "$MaxRuntimeMinutes",
+  "--warm-up-seconds", "$WarmUpSeconds",
+  "--readiness-seconds", "$ReadinessSeconds"
+)
 if ($TargetId -ne "") { $schedulerArgs += @("--target-id", $TargetId) }
 if ($Execute) { $schedulerArgs += "--execute" }
 & npm @schedulerArgs

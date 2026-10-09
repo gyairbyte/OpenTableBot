@@ -5,6 +5,11 @@ export interface SchedulerTickLoopOptions {
   readonly intervalMs?: number;
   readonly now?: () => Date;
   readonly onError?: (message: string) => void;
+  /**
+   * Consulted before each pass. Returning a reason skips the pass, which lets
+   * the console stand down while an unattended scheduled run owns the drop.
+   */
+  readonly blockedBy?: () => Promise<string | undefined>;
 }
 
 const DEFAULT_INTERVAL_MS = 5_000;
@@ -17,10 +22,12 @@ export class SchedulerTickLoop {
   private readonly intervalMs: number;
   private readonly now: () => Date;
   private readonly onError: (message: string) => void;
+  private readonly blockedBy: (() => Promise<string | undefined>) | undefined;
   private timer: NodeJS.Timeout | undefined;
   private inFlight: Promise<void> | undefined;
   private lastTickAt: string | undefined;
   private lastTickError: string | undefined;
+  private lastSkippedReason: string | undefined;
 
   constructor(
     private readonly scheduler: Pick<ReservationScheduler, "runDueTargets">,
@@ -29,6 +36,7 @@ export class SchedulerTickLoop {
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.now = options.now ?? (() => new Date());
     this.onError = options.onError ?? (() => undefined);
+    this.blockedBy = options.blockedBy;
   }
 
   start(): void {
@@ -52,6 +60,12 @@ export class SchedulerTickLoop {
     if (this.inFlight !== undefined) return this.inFlight;
     const pass = (async () => {
       try {
+        const blocked = await this.blockedBy?.();
+        if (blocked !== undefined) {
+          this.lastSkippedReason = blocked;
+          return;
+        }
+        this.lastSkippedReason = undefined;
         await this.scheduler.runDueTargets();
         this.lastTickAt = this.now().toISOString();
         this.lastTickError = undefined;
@@ -69,10 +83,17 @@ export class SchedulerTickLoop {
     }
   }
 
-  status(): { readonly lastTickAt?: string; readonly lastTickError?: string } {
+  status(): {
+    readonly lastTickAt?: string;
+    readonly lastTickError?: string;
+    readonly schedulerSkippedReason?: string;
+  } {
     return {
       ...(this.lastTickAt === undefined ? {} : { lastTickAt: this.lastTickAt }),
       ...(this.lastTickError === undefined ? {} : { lastTickError: this.lastTickError }),
+      ...(this.lastSkippedReason === undefined
+        ? {}
+        : { schedulerSkippedReason: this.lastSkippedReason }),
     };
   }
 }

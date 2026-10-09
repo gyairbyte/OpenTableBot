@@ -4,11 +4,23 @@ import type { Notifier } from "../notifications/notifier.js";
 import type { TargetRecord, TargetStore } from "../storage/target-store.js";
 import type { BookingEngine } from "./booking-engine.js";
 
+export interface SchedulerReadiness {
+  readonly ready: boolean;
+  /** Short, operator-facing explanation, e.g. "extension not connected". */
+  readonly detail: string;
+}
+
 export interface ReservationSchedulerOptions {
   /** How long before the drop to begin verifying readiness. Default 60 s. */
   readonly warmUpLeadMs?: number;
   /** Readiness poll interval during warm-up. Default 5 s. */
   readonly readinessPollMs?: number;
+  /**
+   * Full readiness probe: the browser session must be usable, not merely
+   * signed in. When supplied, the scheduler refuses to start a run against a
+   * browser that never became ready instead of failing inside the engine.
+   */
+  readonly readiness?: () => Promise<SchedulerReadiness>;
   readonly now?: () => number;
   readonly sleep?: (milliseconds: number) => Promise<void>;
 }
@@ -27,6 +39,7 @@ export class ReservationScheduler {
   private readonly readinessPollMs: number;
   private readonly now: () => number;
   private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly readiness: (() => Promise<SchedulerReadiness>) | undefined;
 
   constructor(
     private readonly engine: BookingEngine,
@@ -38,6 +51,7 @@ export class ReservationScheduler {
     this.warmUpLeadMs = options.warmUpLeadMs ?? DEFAULT_WARM_UP_LEAD_MS;
     this.readinessPollMs = options.readinessPollMs ?? DEFAULT_READINESS_POLL_MS;
     this.now = options.now ?? (() => Date.now());
+    this.readiness = options.readiness;
     this.sleep =
       options.sleep ??
       ((milliseconds) =>
@@ -71,13 +85,44 @@ export class ReservationScheduler {
       const remaining = releaseAt - this.now();
       if (remaining > 0) await this.sleep(remaining);
     }
+    // A scheduled run may start on a machine that just resumed. If the browser
+    // never came up, pausing with the reason is far more useful than letting the
+    // engine fail against a page that is not there.
+    if (this.readiness !== undefined) {
+      const readiness = await this.probeReadiness();
+      if (!readiness.ready) {
+        await this.pause(
+          record,
+          `Browser was not ready at the release time (${readiness.detail})`,
+        );
+        return;
+      }
+    }
     await this.engine.runOnce(target.id);
+  }
+
+  private async probeReadiness(): Promise<SchedulerReadiness> {
+    if (this.readiness !== undefined) {
+      try {
+        return await this.readiness();
+      } catch (error) {
+        return {
+          ready: false,
+          detail: error instanceof Error ? error.message : "readiness probe failed",
+        };
+      }
+    }
+    // Without a full probe, fall back to the conservative sign-in check.
+    const status = await this.adapter.checkAuthentication();
+    return status.authenticated
+      ? { ready: true, detail: "authenticated" }
+      : { ready: false, detail: `OpenTable session ${status.reason}` };
   }
 
   private async waitForReadiness(releaseAt: number): Promise<void> {
     while (this.now() < releaseAt) {
       try {
-        if ((await this.adapter.checkAuthentication()).authenticated) return;
+        if ((await this.probeReadiness()).ready) return;
       } catch {
         // Not ready yet; keep polling within the warm-up window.
       }

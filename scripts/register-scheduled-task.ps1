@@ -3,15 +3,20 @@
   Registers a Windows Task Scheduler entry that warms up and runs a known drop.
 
 .DESCRIPTION
-  Creates a task that starts run-scheduled.ps1 one minute before the reservation
-  release time. The task is registered to wake the machine. Run this from an
-  elevated PowerShell prompt.
+  Creates a task that starts run-scheduled.ps1 before the reservation release
+  time. The script opens Chrome on the restaurant page, starts the local bridge
+  if it is not running, and waits for the extension to report an eligible page
+  ready, so the machine can be fully asleep until the trigger. The task is
+  registered to wake the machine. Run this from an elevated PowerShell prompt.
+
+  Chrome must already be signed in to OpenTable in the profile it opens. The
+  scheduled task starts Chrome and the bridge; it never signs in for you.
 
 .EXAMPLE
   .\register-scheduled-task.ps1 -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" -DropTime "10:00" -DropDate "2026-11-08" -TargetId don-angie -Execute
 
 .EXAMPLE
-  # Recurring daily warm-up at 09:59 for a 10:00 drop
+  # Recurring daily warm-up at 09:57 for a 10:00 drop
   .\register-scheduled-task.ps1 -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" -DropTime "10:00" -TargetId don-angie
 #>
 param(
@@ -21,7 +26,7 @@ param(
   [string]$TargetId = "",
   [switch]$Execute,
   [string]$TaskName = "OpenTableBot-Drop",
-  [int]$WarmUpSeconds = 60
+  [int]$WarmUpSeconds = 180
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,6 +49,8 @@ $argumentList = @(
   "-RestaurantUrl", "`"$RestaurantUrl`""
 )
 if ($TargetId -ne "") { $argumentList += @("-TargetId", "`"$TargetId`"") }
+$argumentList += @("-WarmUpSeconds", "$WarmUpSeconds")
+$argumentList += @("-ReadinessSeconds", "$WarmUpSeconds")
 if ($Execute) { $argumentList += "-Execute" }
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument ($argumentList -join " ")

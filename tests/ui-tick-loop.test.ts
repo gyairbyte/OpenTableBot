@@ -57,4 +57,36 @@ describe("SchedulerTickLoop", () => {
       vi.useRealTimers();
     }
   });
+
+  // The console stands down while an unattended scheduled run owns the drop, so
+  // two schedulers never drive the same target.
+  it("skips the pass and reports why when another scheduler owns the run", async () => {
+    const runDueTargets = vi.fn().mockResolvedValue(undefined);
+    const loop = new SchedulerTickLoop(
+      { runDueTargets },
+      { blockedBy: async () => "An unattended scheduler owns this drop: schedule-cli (pid 42)" },
+    );
+
+    await loop.tickOnce();
+
+    expect(runDueTargets).not.toHaveBeenCalled();
+    expect(loop.status().schedulerSkippedReason).toContain("unattended scheduler owns this drop");
+    expect(loop.status().lastTickAt).toBeUndefined();
+  });
+
+  it("resumes once the other scheduler releases the run", async () => {
+    const runDueTargets = vi.fn().mockResolvedValue(undefined);
+    let blocker: string | undefined = "held";
+    const loop = new SchedulerTickLoop({ runDueTargets }, {
+      blockedBy: async () => blocker,
+    });
+
+    await loop.tickOnce();
+    expect(runDueTargets).not.toHaveBeenCalled();
+
+    blocker = undefined;
+    await loop.tickOnce();
+    expect(runDueTargets).toHaveBeenCalledTimes(1);
+    expect(loop.status().schedulerSkippedReason).toBeUndefined();
+  });
 });

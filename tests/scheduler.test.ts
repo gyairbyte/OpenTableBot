@@ -116,4 +116,96 @@ describe("ReservationScheduler", () => {
     expect(runOnce).toHaveBeenCalledWith("target-1");
     expect(checkAuthentication).not.toHaveBeenCalled();
   });
+
+  // A drop can trigger on a machine that just resumed. If Chrome and the
+  // extension never came up, the run must not start against a dead page.
+  it("pauses instead of running when the browser is not ready at the release time", async () => {
+    const directory = await tempDirectory();
+    const store = new FileTargetStore({ directory });
+    const stored = await store.save(record("2026-10-01T12:00:00.000Z"), 0);
+
+    const runOnce = vi.fn().mockResolvedValue(undefined);
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const scheduler = new ReservationScheduler(
+      { runOnce },
+      { checkAuthentication: vi.fn().mockResolvedValue({ authenticated: true }) },
+      store,
+      { notify },
+      {
+        now: () => Date.parse("2026-10-01T12:00:00.000Z"),
+        readiness: async () => ({
+          ready: false,
+          detail: "extension not connected, no eligible OpenTable page",
+        }),
+      },
+    );
+
+    await scheduler.runTarget(stored);
+
+    expect(runOnce).not.toHaveBeenCalled();
+    const saved = await store.get("target-1");
+    expect(saved?.state).toBe(TargetState.PAUSED);
+    expect(saved?.pauseReason).toContain("Browser was not ready at the release time");
+    expect(saved?.pauseReason).toContain("extension not connected");
+    expect(notify).toHaveBeenCalledWith({
+      type: "target-paused",
+      targetId: "target-1",
+      reason: expect.stringContaining("Browser was not ready"),
+    });
+  });
+
+  it("runs once when the browser is ready at the release time", async () => {
+    const directory = await tempDirectory();
+    const store = new FileTargetStore({ directory });
+    const stored = await store.save(record("2026-10-01T12:00:00.000Z"), 0);
+
+    const runOnce = vi.fn().mockResolvedValue(undefined);
+    const scheduler = new ReservationScheduler(
+      { runOnce },
+      { checkAuthentication: vi.fn().mockResolvedValue({ authenticated: true }) },
+      store,
+      { notify: vi.fn().mockResolvedValue(undefined) },
+      {
+        now: () => Date.parse("2026-10-01T12:00:00.000Z"),
+        readiness: async () => ({ ready: true, detail: "extension connected" }),
+      },
+    );
+
+    await scheduler.runTarget(stored);
+
+    expect(runOnce).toHaveBeenCalledWith("target-1");
+  });
+
+  it("waits through the warm-up window for a late browser", async () => {
+    const directory = await tempDirectory();
+    const store = new FileTargetStore({ directory });
+    const stored = await store.save(record("2026-10-01T12:00:00.000Z"), 0);
+
+    let current = Date.parse("2026-10-01T11:59:00.000Z");
+    let ready = false;
+    const runOnce = vi.fn().mockResolvedValue(undefined);
+    const scheduler = new ReservationScheduler(
+      { runOnce },
+      { checkAuthentication: vi.fn().mockResolvedValue({ authenticated: true }) },
+      store,
+      { notify: vi.fn().mockResolvedValue(undefined) },
+      {
+        now: () => current,
+        sleep: async (milliseconds) => {
+          current += milliseconds;
+          // Chrome finishes loading 20 seconds before the drop.
+          if (current >= Date.parse("2026-10-01T11:59:40.000Z")) ready = true;
+        },
+        readiness: async () =>
+          ready
+            ? { ready: true, detail: "extension connected" }
+            : { ready: false, detail: "extension not connected" },
+      },
+    );
+
+    await scheduler.runTarget(stored);
+
+    expect(runOnce).toHaveBeenCalledWith("target-1");
+    expect((await store.get("target-1"))?.state).toBe(TargetState.ARMED);
+  });
 });

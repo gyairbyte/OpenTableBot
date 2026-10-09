@@ -25,6 +25,8 @@ up before the release, waits for the drop, and makes exactly one attempt.
 The scheduler does **not** launch Chrome. Task Scheduler does, via
 `scripts/run-scheduled.ps1`, which also opens the restaurant page so the
 extension's content scripts load and capture the page's availability operation.
+See [Unattended startup](#unattended-startup) for what that script does and what
+still needs a human once.
 
 ## Target state file
 
@@ -91,17 +93,22 @@ Options:
 - `--execute` performs the real lock and submission.
 - `--tick-seconds <n>` polling interval while waiting for a drop (default 5).
 - `--max-runtime-minutes <n>` upper bound before exiting (default 30).
+- `--warm-up-seconds <n>` how long before the drop to start readiness checks and
+  warm-up (default 180).
+- `--readiness-seconds <n>` how long to wait for the extension and an eligible
+  page before proceeding (default equals the warm-up).
 
-The scheduler warms up 60 seconds before `knownReservationReleaseAt`, polling
-`AUTH_STATUS` until the page is ready, then waits for the release time and runs
-once.
+The scheduler warms up before `knownReservationReleaseAt`, polling readiness
+until the extension and an eligible page are both available, then waits for the
+release time and runs once. If readiness never arrives, the target is paused with
+the readiness detail rather than run.
 
 ## Operator console
 
 `npm run opentable:ui` starts a loopback HTTP console on
 `http://127.0.0.1:8790` that drives the same store, engine, and scheduler as the
-CLI. It accepts the same flags as the scheduler for `--tick-seconds` and
-`--execute`, plus `--port <n>`.
+CLI. It accepts the same flags as the scheduler for `--tick-seconds`,
+`--warm-up-seconds`, and `--execute`, plus `--port <n>`.
 
 ```sh
 # Dry-run console on the default port
@@ -148,8 +155,14 @@ probe answers "The RestaurantsAvailability operation has not been observed on
 this page", open the restaurant in Chrome and probe again.
 
 The embedded scheduler ticks on the same interval as the CLI and never overlaps
-passes. Mode is fixed when the process starts: a dry-run console cannot submit a
-reservation, so restart with `--execute` to enable controlled writes.
+passes. It uses the same readiness gate as the CLI, so a run pauses rather than
+firing at a browser that is not there. Mode is fixed when the process starts: a
+dry-run console cannot submit a reservation, so restart with `--execute` to
+enable controlled writes.
+
+The console deliberately does not hold the unattended scheduler lock, so leaving
+it open can never block a scheduled drop. When an unattended run does own the
+drop, the console skips its own passes and says so in the status line.
 
 The server binds to `127.0.0.1` only, mutations must be same-origin JSON
 requests (so a cross-site HTML form cannot reach them), and nothing is exposed
@@ -157,7 +170,7 @@ beyond the loopback socket.
 
 ## Registering the scheduled task
 
-From an elevated PowerShell prompt, one minute of warm-up is added automatically:
+From an elevated PowerShell prompt, three minutes of warm-up is added automatically:
 
 ```powershell
 .\scripts\register-scheduled-task.ps1 `
@@ -171,6 +184,52 @@ From an elevated PowerShell prompt, one minute of warm-up is added automatically
 Omit `-DropDate` for a recurring daily warm-up. The task is registered with
 `-WakeToRun` so an idle machine wakes for the drop. Remove it with
 `Unregister-ScheduledTask -TaskName OpenTableBot-Drop`.
+
+## Unattended startup
+
+You do not have to keep Chrome or the bridge open. The registered task starts
+`run-scheduled.ps1` `WarmUpSeconds` before the release time, and that script:
+
+1. opens the restaurant page in your normal signed-in Chrome profile, which
+   also starts the MV3 service worker so the extension reconnects to the bridge;
+2. starts the local bridge if nothing is listening on the bridge port;
+3. runs the scheduler, which waits for readiness before the drop.
+
+Readiness means the bridge answers `PING` with both `extensionConnected: true`
+and `pageReady: true`, so the extension is paired *and* an eligible OpenTable
+page is bound. The scheduler polls readiness through the whole warm-up window
+(`--readiness-seconds`, default 180), so a machine that just resumed has time
+for Chrome to launch and the service worker to wake.
+
+If the browser is still not ready at the release time, the target is paused with
+the reason instead of being run against a page that is not there:
+
+```text
+Browser was not ready at the release time (extension not connected, no eligible OpenTable page)
+```
+
+That pause is deliberate. The drop has passed, the inventory cannot be reached,
+and a clear paused state is more useful than a confusing adapter failure.
+
+Two things still require a human once:
+
+- **Chrome must be signed in to OpenTable** in the profile the script opens.
+  Sign-in, challenges, and CAPTCHAs are never automated.
+- **The restaurant page must load normally.** The availability probe replays the
+  page's own request, so the tab has to reach a real restaurant page rather than
+  a challenge or an error page.
+
+### Only one unattended scheduler at a time
+
+An unattended run takes an exclusive lock at
+`.local/state/scheduler.lock` (process id, owner, and acquisition time). A second
+unattended run refuses to start and names the holder, so two processes never race
+the same targets through the same drop. A lock left behind by a crashed or
+powered-off process is detected as stale and taken over automatically.
+
+The operator console never takes that lock. Instead it reads it and stands down
+while an unattended run owns the drop, reporting why in the status line. That
+means leaving the console open cannot block a scheduled drop.
 
 ## Notifications and logs
 
