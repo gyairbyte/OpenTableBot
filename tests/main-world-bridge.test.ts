@@ -6,6 +6,7 @@ import {
   installAvailabilityApolloBridge,
   installAvailabilityFetchBridge,
   mergeAvailabilityVariables,
+  matchRestaurantIdType,
   exactIntentMatch,
   beginPreparedSubmission,
   buildStandardLockRequest,
@@ -20,7 +21,7 @@ describe("MAIN-world Apollo bridge", () => {
       expiresAt: 2_000,
       intent: { slotId: "slot-1" },
       previewReference: "00000000-0000-4000-8000-000000000001",
-      slotLockId: "browser-only-lock",
+      slotLockId: 987654,
       diningAreaId: 1,
       correlationId: "browser-only-correlation",
       lockOperationId: "lock-operation-1",
@@ -175,8 +176,40 @@ describe("MAIN-world Apollo bridge", () => {
     ).toEqual(captured);
   });
 
-  it("adds a browser-local preview handle without replacing provider slot data", () => {
-    const result = attachPreviewReferences(
+  it("replays restaurantIds as numbers when the page used numeric IDs", () => {
+    expect(
+      mergeAvailabilityVariables(
+        {
+          restaurantIds: [994474],
+          date: "2026-08-29",
+          time: "19:00:00",
+          partySize: 2,
+          databaseRegion: "NA",
+        },
+        {
+          restaurantIds: ["994474"],
+          date: "2026-10-23",
+          time: "17:00",
+          partySize: 2,
+          databaseRegion: "NA",
+        },
+      ),
+    ).toEqual({
+      restaurantIds: [994474],
+      date: "2026-10-23",
+      time: "17:00",
+      partySize: 2,
+      databaseRegion: "NA",
+    });
+  });
+
+  it("keeps string restaurantIds when the page used strings", () => {
+    expect(
+      matchRestaurantIdType(["994474", "other"], ["994474", "other"]),
+    ).toEqual(["994474", "other"]);
+  });
+
+  it("adds a browser-local preview handle without replacing provider slot data", () => {    const result = attachPreviewReferences(
       {
         data: {
           availability: [
@@ -257,6 +290,27 @@ describe("MAIN-world Apollo bridge", () => {
       },
     });
     expect(JSON.stringify(request)).not.toMatch(/cookie|authorization|csrf|slotAvailabilityToken/iu);
+  });
+
+  it("includes the page CSRF token on the fallback lock request when provided", () => {
+    const request = buildStandardLockRequest(
+      {
+        restaurantId: 123,
+        reservationDateTime: "2026-09-18T19:00",
+        partySize: 2,
+        databaseRegion: "NA",
+        slotHash: "browser-local-slot-hash",
+        diningAreaId: 456,
+      },
+      { csrfToken: "page-csrf-token" },
+    );
+    expect(request.headers).toEqual({
+      accept: "application/json",
+      "content-type": "application/json",
+      "ot-page-type": "network_details",
+      "ot-page-group": "booking",
+      "x-csrf-token": "page-csrf-token",
+    });
   });
 
   it("classifies a 403 response without retaining sensitive response text", () => {

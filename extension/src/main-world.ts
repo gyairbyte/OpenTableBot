@@ -60,6 +60,7 @@ interface ApolloClientLike {
 
 interface ApolloWindow extends Window {
   __APOLLO_CLIENT__?: ApolloClientLike;
+  __CSRF_TOKEN__?: string;
   fetch: MarkedFetch;
 }
 
@@ -154,7 +155,7 @@ export interface PreparedRecord {
   readonly expiresAt: number;
   readonly intent: Record<string, unknown>;
   readonly previewReference: string;
-  readonly slotLockId: string;
+  readonly slotLockId: number;
   readonly diningAreaId: number;
   readonly correlationId: string;
   readonly lockOperationId: string;
@@ -432,6 +433,23 @@ export function findAvailabilityOperation(value: unknown): {
   return operation === undefined ? undefined : { operation, payloadWasArray: Array.isArray(value) };
 }
 
+/**
+ * Replays restaurant IDs using the captured element type. The provider schema
+ * declares restaurantIds as Int, so overriding the page's numeric IDs with
+ * strings produces a GraphQL variable-type error (HTTP 400).
+ */
+export function matchRestaurantIdType(
+  requested: readonly unknown[],
+  captured: readonly unknown[],
+): readonly unknown[] {
+  const capturedIsNumeric = captured.some((value) => typeof value === "number");
+  if (!capturedIsNumeric) return requested;
+  return requested.map((value) => {
+    const numeric = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(numeric) ? numeric : value;
+  });
+}
+
 export function mergeAvailabilityVariables(
   captured: Record<string, unknown>,
   requested: Record<string, unknown>,
@@ -475,7 +493,12 @@ export function mergeAvailabilityVariables(
         : positionalTokens;
   const approvedOverrides = {
     ...(Array.isArray(requested.restaurantIds)
-      ? { restaurantIds: requested.restaurantIds }
+      ? {
+          restaurantIds: matchRestaurantIdType(
+            requested.restaurantIds,
+            Array.isArray(captured.restaurantIds) ? captured.restaurantIds : [],
+          ),
+        }
       : {}),
     ...(typeof requested.date === "string" ? { date: requested.date } : {}),
     ...(typeof requested.time === "string" ? { time: requested.time } : {}),
@@ -778,11 +801,36 @@ async function executeCapturedAvailability(
     body,
   });
   if (!response.ok) {
-    const tokenCount = Array.isArray(mergedVariables.restaurantAvailabilityTokens)
-      ? mergedVariables.restaurantAvailabilityTokens.length
-      : 0;
+    let providerMessage = "";
+    try {
+      const rawBody = await response.clone().text();
+      const errorBody = JSON.parse(rawBody) as unknown;
+      if (isRecord(errorBody) && Array.isArray(errorBody.errors)) {
+        const first = errorBody.errors.find(isRecord);
+        if (first !== undefined && typeof first.message === "string") {
+          providerMessage = `; provider error: ${first.message.slice(0, 200)}`;
+        } else {
+          providerMessage = `; provider errors: ${JSON.stringify(errorBody.errors).slice(0, 200)}`;
+        }
+      } else {
+        providerMessage = `; provider body: ${rawBody.replace(/\s+/g, " ").slice(0, 200)}`;
+      }
+    } catch {
+      // The provider response was not JSON; the status and diff remain the signal.
+    }
+    const describe = (value: unknown): string => {
+      if (Array.isArray(value)) return `[${value.map((item) => typeof item).join("|")}]`;
+      return typeof value;
+    };
+    const compare = [
+      `restaurantIds ${describe(capturedVariables.restaurantIds)}->${describe(mergedVariables.restaurantIds)}`,
+      `date ${String(capturedVariables.date)}->${String(mergedVariables.date)}`,
+      `time ${String(capturedVariables.time)}->${String(mergedVariables.time)}`,
+      `partySize ${String(capturedVariables.partySize)}->${String(mergedVariables.partySize)}`,
+      `databaseRegion ${String(capturedVariables.databaseRegion)}->${String(mergedVariables.databaseRegion)}`,
+    ].join("; ");
     throw new Error(
-      `RestaurantsAvailability returned HTTP ${response.status}; captured variable keys: ${Object.keys(capturedVariables).sort().join(",").slice(0, 220)}; matching page token count: ${tokenCount}`,
+      `RestaurantsAvailability HTTP ${response.status}${providerMessage}; replay diff: ${compare}`,
     );
   }
   const payload = (await response.json()) as unknown;
@@ -1097,7 +1145,22 @@ function selectLockFetchTemplate(): LockFetchTemplate | undefined {
   return lockFetchTemplates[lockFetchTemplates.length - 1];
 }
 
-export function buildStandardLockRequest(fields: StandardLockRequestFields): {
+/**
+ * OpenTable's app pages (restaurant profiles, /booking/*, /user/*) define
+ * window.__CSRF_TOKEN__ at page load. Every write endpoint (the slot-lock and
+ * cancel GraphQL mutations and /dapi/booking/make-reservation) returns an
+ * empty 403 without the x-csrf-token header it feeds; homepage and search
+ * pages never define it.
+ */
+function pageCsrfToken(targetWindow: ApolloWindow): string | undefined {
+  const token = targetWindow.__CSRF_TOKEN__;
+  return typeof token === "string" && token.trim().length > 0 ? token : undefined;
+}
+
+export function buildStandardLockRequest(
+  fields: StandardLockRequestFields,
+  options?: { readonly csrfToken: string },
+): {
   readonly headers: Readonly<Record<string, string>>;
   readonly body: Record<string, unknown>;
 } {
@@ -1144,6 +1207,7 @@ export function buildStandardLockRequest(fields: StandardLockRequestFields): {
       "content-type": "application/json",
       "ot-page-type": "network_details",
       "ot-page-group": "booking",
+      ...(options === undefined ? {} : { "x-csrf-token": options.csrfToken }),
     },
     body: {
       operationName: "BookDetailsStandardSlotLock",
@@ -1233,6 +1297,10 @@ async function lockSlot(targetWindow: ApolloWindow, request: WritePageRequest): 
     throw new Error("BOOKING_INVARIANT_MISMATCH: Provider restaurant ID was not a positive integer");
   }
   const capturedLock = selectLockFetchTemplate();
+  const csrfToken = pageCsrfToken(targetWindow);
+  if (capturedLock === undefined && csrfToken === undefined) {
+    return { outcome: { status: "LOCK_NOT_DISPATCHED", message: "OpenTable page did not expose a CSRF token; reload a restaurant or booking page and retry" } };
+  }
   const url = capturedLock !== undefined
     ? new URL(capturedLock.url, targetWindow.location.href)
     : new URL("/dapi/fe/gql", targetWindow.location.origin);
@@ -1240,14 +1308,17 @@ async function lockSlot(targetWindow: ApolloWindow, request: WritePageRequest): 
     url.searchParams.set("optype", "mutation");
     url.searchParams.set("opname", "BookDetailsStandardSlotLock");
   }
-  const providerRequest = buildStandardLockRequest({
-    restaurantId: numericRestaurantId,
-    reservationDateTime: `${record.date}T${record.time}`,
-    partySize: record.partySize,
-    databaseRegion: record.databaseRegion,
-    slotHash: record.slotHash,
-    diningAreaId,
-  });
+  const providerRequest = buildStandardLockRequest(
+    {
+      restaurantId: numericRestaurantId,
+      reservationDateTime: `${record.date}T${record.time}`,
+      partySize: record.partySize,
+      databaseRegion: record.databaseRegion,
+      slotHash: record.slotHash,
+      diningAreaId,
+    },
+    capturedLock === undefined && csrfToken !== undefined ? { csrfToken } : undefined,
+  );
   const controller = new AbortController();
   const abortTimer = targetWindow.setTimeout(
     () => controller.abort(),
@@ -1274,11 +1345,15 @@ async function lockSlot(targetWindow: ApolloWindow, request: WritePageRequest): 
       contentKind: "unknown",
       category: "unclassified",
     };
+    let providerBody = "";
     try {
-      diagnostic = classifyLockHttpFailure(response.headers.get("content-type"), await response.text());
+      const responseText = await response.text();
+      diagnostic = classifyLockHttpFailure(response.headers.get("content-type"), responseText);
+      providerBody = responseText.replace(/\s+/g, " ").trim().slice(0, 200);
     } catch {
       // Diagnostics must never alter the fail-closed lock outcome.
     }
+    const bodyDetail = providerBody === "" ? "" : `; body: ${providerBody}`;
     // 4xx responses that are not auth/access/rate-limit indicate the provider read and
     // rejected the lock request, so we can treat them as a definitive rejection.
     const definitiveRejection = response.status >= 400 && response.status < 500 &&
@@ -1289,8 +1364,8 @@ async function lockSlot(targetWindow: ApolloWindow, request: WritePageRequest): 
       outcome: {
         status: outcome,
         message: definitiveRejection
-          ? `Provider lock returned HTTP ${response.status} and rejected the request (${diagnostic.contentKind}/${diagnostic.category})`
-          : `Provider lock returned HTTP ${response.status} after dispatch without a definitive lock result (${diagnostic.contentKind}/${diagnostic.category})`,
+          ? `Provider lock returned HTTP ${response.status} and rejected the request (${diagnostic.contentKind}/${diagnostic.category}${bodyDetail})`
+          : `Provider lock returned HTTP ${response.status} after dispatch without a definitive lock result (${diagnostic.contentKind}/${diagnostic.category}${bodyDetail})`,
       },
     };
   }
@@ -1311,7 +1386,15 @@ async function lockSlot(targetWindow: ApolloWindow, request: WritePageRequest): 
     emitLockProgress(targetWindow, operationId, "PROVIDER_RESPONSE_RECEIVED", "LOCK_REJECTED");
     return { outcome: { status: "LOCK_REJECTED", message: "Provider did not confirm the slot lock" } };
   }
-  if (lockSlotResult?.success !== true || typeof slotLock?.slotLockId !== "string") {
+  // OpenTable's lock response carries slotLockId as a JSON number (verified
+  // live against the reference booking flow); a numeric string is accepted too.
+  const rawSlotLockId = slotLock?.slotLockId;
+  const slotLockId = typeof rawSlotLockId === "number" && Number.isSafeInteger(rawSlotLockId)
+    ? rawSlotLockId
+    : typeof rawSlotLockId === "string" && rawSlotLockId.trim() !== "" && Number.isSafeInteger(Number(rawSlotLockId))
+      ? Number(rawSlotLockId)
+      : undefined;
+  if (lockSlotResult?.success !== true || slotLockId === undefined) {
     emitLockProgress(targetWindow, operationId, "PROVIDER_RESPONSE_RECEIVED", "LOCK_OUTCOME_UNKNOWN");
     return { outcome: { status: "LOCK_OUTCOME_UNKNOWN", message: "Provider lock response omitted a definitive result" } };
   }
@@ -1325,7 +1408,7 @@ async function lockSlot(targetWindow: ApolloWindow, request: WritePageRequest): 
     expiresAt,
     intent: structuredClone(request.request),
     previewReference,
-    slotLockId: slotLock.slotLockId,
+    slotLockId,
     diningAreaId,
     correlationId: crypto.randomUUID(),
     lockOperationId: operationId,
@@ -1469,13 +1552,22 @@ async function submitReservation(targetWindow: ApolloWindow, request: WritePageR
       };
       profile = {};
     } else {
+      const csrfToken = pageCsrfToken(targetWindow);
+      if (csrfToken === undefined) {
+        throw new Error("SUBMISSION_REJECTED: OpenTable page did not expose a CSRF token for the reservation write");
+      }
       const dashboard = await targetWindow.fetch(new URL("/user/dining-dashboard", targetWindow.location.origin), {
         method: "GET", credentials: "include", redirect: "follow",
       });
       if (!dashboard.ok) throw new Error(`SUBMISSION_REJECTED: Profile returned HTTP ${dashboard.status}`);
       profile = profileFromState(extractInitialStateFromHtml(await dashboard.text()));
       submissionUrl = new URL("/dapi/booking/make-reservation", targetWindow.location.origin);
-      submissionHeaders = { "content-type": "application/json", "ot-page-type": "network_details", "ot-page-group": "booking" };
+      submissionHeaders = {
+        "content-type": "application/json",
+        "ot-page-type": "network_details",
+        "ot-page-group": "booking",
+        "x-csrf-token": csrfToken,
+      };
       submissionCredentials = "include";
       submissionBody = {
         restaurantId: Number(record.restaurantId),
@@ -1617,7 +1709,7 @@ function installMessageListener(targetWindow: ApolloWindow): void {
         .catch((error: unknown) =>
           respond(targetWindow, responseMarker, writeRequest.id, {
             ok: false,
-            error: error instanceof Error ? error.message.slice(0, 300) : "Controlled booking operation failed",
+            error: error instanceof Error ? error.message.slice(0, 700) : "Controlled booking operation failed",
           }),
         );
       return;
@@ -1629,7 +1721,7 @@ function installMessageListener(targetWindow: ApolloWindow): void {
         .catch((error: unknown) =>
           respond(targetWindow, DINING_AREAS_RESPONSE_MARKER, diningAreasRequest.id, {
             ok: false,
-            error: error instanceof Error ? error.message.slice(0, 300) : "Dining-area discovery failed",
+            error: error instanceof Error ? error.message.slice(0, 700) : "Dining-area discovery failed",
           }),
         );
       return;
@@ -1648,7 +1740,7 @@ function installMessageListener(targetWindow: ApolloWindow): void {
             ok: false,
             error:
               error instanceof Error
-                ? error.message.slice(0, 300)
+                ? error.message.slice(0, 700)
                 : "Booking preview operation failed",
           }),
         );
@@ -1680,7 +1772,7 @@ function installMessageListener(targetWindow: ApolloWindow): void {
       .catch((error: unknown) =>
         respond(targetWindow, RESPONSE_MARKER, pageRequest.id, {
           ok: false,
-          error: error instanceof Error ? error.message.slice(0, 300) : "Availability operation failed",
+          error: error instanceof Error ? error.message.slice(0, 700) : "Availability operation failed",
         }),
       );
   });

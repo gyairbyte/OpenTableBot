@@ -644,7 +644,7 @@ async function submitControlledReservation(message: InternalMessage): Promise<un
 }
 
 function errorResponse(error: unknown): { readonly ok: false; readonly error: string } {
-  return { ok: false, error: error instanceof Error ? error.message.slice(0, 300) : "Page operation failed" };
+  return { ok: false, error: error instanceof Error ? error.message.slice(0, 700) : "Page operation failed" };
 }
 
 function classifiedPageFailure(): { readonly ok: false; readonly error: string; readonly pageKind: OpenTablePageKind } | undefined {

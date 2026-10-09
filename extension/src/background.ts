@@ -37,17 +37,19 @@ import {
   closeAfterTransportError,
   closeExtensionSocket,
 } from "./websocket-close-codes.js";
+import { parseActivePage } from "./active-page.js";
 
 const STORAGE_CREDENTIAL = "bridgeCredential";
 const STORAGE_PORT = "bridgePort";
+const STORAGE_ACTIVE_PAGE = "activePage";
 
 interface ExtensionState {
   credential?: string;
   port: number;
   socket: WebSocket | undefined;
   authenticated: boolean;
-  activeTabId?: number;
-  activePageUrl?: string;
+  activeTabId: number | undefined;
+  activePageUrl: string | undefined;
   reconnectTimer: number | undefined;
   heartbeatTimer: number | undefined;
 }
@@ -56,6 +58,8 @@ const state: ExtensionState = {
   port: DEFAULT_BRIDGE_PORT,
   socket: undefined,
   authenticated: false,
+  activeTabId: undefined,
+  activePageUrl: undefined,
   reconnectTimer: undefined,
   heartbeatTimer: undefined,
 };
@@ -95,7 +99,7 @@ function extensionError(
     | "DUPLICATE_SUBMISSION_PREVENTED",
   message: string,
 ): void {
-  send({ protocolVersion: BRIDGE_PROTOCOL_VERSION, id, type: "ERROR", code, message: message.slice(0, 500) });
+  send({ protocolVersion: BRIDGE_PROTOCOL_VERSION, id, type: "ERROR", code, message: message.slice(0, 700) });
 }
 
 function pageFailureCode(pageKind: unknown):
@@ -162,6 +166,33 @@ function announceReady(): void {
     pageUrl: state.activePageUrl,
     pageReady: state.activeTabId !== undefined,
   });
+}
+
+/**
+ * Remember the bound page in session storage so an MV3 service-worker restart
+ * can re-establish readiness without waiting for the next page load.
+ */
+function persistActivePage(): void {
+  const value =
+    state.activeTabId === undefined || state.activePageUrl === undefined
+      ? undefined
+      : { tabId: state.activeTabId, pageUrl: state.activePageUrl };
+  void chrome.storage.session.set({ [STORAGE_ACTIVE_PAGE]: value }).catch(() => undefined);
+}
+
+async function restoreActivePage(): Promise<void> {
+  try {
+    const stored = await chrome.storage.session.get(STORAGE_ACTIVE_PAGE);
+    const restored = parseActivePage(stored[STORAGE_ACTIVE_PAGE]);
+    if (restored === undefined) return;
+    await chrome.tabs.get(restored.tabId);
+    state.activeTabId = restored.tabId;
+    state.activePageUrl = restored.pageUrl;
+  } catch {
+    state.activeTabId = undefined;
+    state.activePageUrl = undefined;
+    void chrome.storage.session.remove(STORAGE_ACTIVE_PAGE).catch(() => undefined);
+  }
 }
 
 async function forwardAuthentication(message: AuthStatusRequest): Promise<void> {
@@ -522,9 +553,10 @@ async function pair(code: string, port: number): Promise<void> {
 }
 
 if (typeof chrome !== "undefined" && chrome.runtime?.onMessage !== undefined) {
-  void chrome.storage.local.get([STORAGE_CREDENTIAL, STORAGE_PORT]).then((stored) => {
+  void chrome.storage.local.get([STORAGE_CREDENTIAL, STORAGE_PORT]).then(async (stored) => {
     if (typeof stored[STORAGE_CREDENTIAL] === "string") state.credential = stored[STORAGE_CREDENTIAL];
     if (typeof stored[STORAGE_PORT] === "number") state.port = stored[STORAGE_PORT];
+    await restoreActivePage();
     connect();
   });
 
@@ -534,6 +566,7 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage !== undefined) {
       if (OpenTablePageUrlSchema.safeParse(message.pageUrl).success) {
         state.activeTabId = sender.tab.id;
         state.activePageUrl = sanitizeOpenTablePageUrl(message.pageUrl);
+        persistActivePage();
         announceReady();
       }
       return false;
@@ -556,5 +589,13 @@ if (typeof chrome !== "undefined" && chrome.runtime?.onMessage !== undefined) {
       return true;
     }
     return false;
+  });
+
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    if (tabId !== state.activeTabId) return;
+    state.activeTabId = undefined;
+    state.activePageUrl = undefined;
+    persistActivePage();
+    announceReady();
   });
 }

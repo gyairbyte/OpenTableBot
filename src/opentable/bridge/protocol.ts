@@ -396,7 +396,7 @@ export const ErrorMessageSchema = z
     ...baseShape,
     type: z.literal("ERROR"),
     code: BridgeErrorCodeSchema,
-    message: z.string().min(1).max(500),
+    message: z.string().min(1).max(800),
   })
   .strict();
 
