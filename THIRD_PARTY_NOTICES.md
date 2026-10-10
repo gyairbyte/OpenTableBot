@@ -7,9 +7,12 @@ request field names in `extension/src/content.ts` were informed by
 <https://github.com/chrischall/opentable-mcp>.
 
 The Phase 2 `/booking/details` initial-state extraction pattern and selected
-booking-term field paths were adapted from `chrischall/opentable-mcp` at
-revision `858530b9c58a4b75d39d9f1c269245f092fab147`. Its slot-lock and
-reservation-submission implementations were not adapted.
+booking-term field paths were adapted from `chrischall/opentable-mcp`. Phase 3
+adapts the Standard slot-lock persisted-query operation, signed-in profile
+field paths, and make-reservation request field sequence from that project at
+revision `b99c13cd43b5e670e3020da3f740d6f4311c4fe2`. OpenTableBot independently
+adds its capability boundary, strict bridge schemas, post-lock revalidation,
+sanitization, conservative expiry, and terminal exactly-once outcome model.
 
 Copyright (c) 2026 Chris Hall
 

@@ -57,6 +57,34 @@ describe("OpenTable page classification", () => {
     ).toBe(OpenTablePageKind.UNAUTHENTICATED);
   });
 
+  it("classifies a single authenticated signal on OpenTable as authenticated when no counter-signals exist", () => {
+    expect(
+      classifyOpenTablePage(
+        evidence({
+          url: "https://www.opentable.com/r/some-restaurant",
+          title: "Some Restaurant",
+          bodyText: "Book now",
+          authenticatedSignals: ["authenticated-account-control"],
+          unauthenticatedSignals: [],
+        }),
+      ).kind,
+    ).toBe(OpenTablePageKind.AUTHENTICATED);
+  });
+
+  it("does not classify a single authenticated signal as authenticated when unauthenticated signals are present", () => {
+    expect(
+      classifyOpenTablePage(
+        evidence({
+          url: "https://www.opentable.com/r/some-restaurant",
+          title: "Some Restaurant",
+          bodyText: "Sign in to book",
+          authenticatedSignals: ["authenticated-account-control"],
+          unauthenticatedSignals: ["sign-in-content"],
+        }),
+      ).kind,
+    ).toBe(OpenTablePageKind.NORMAL);
+  });
+
   it("requires combined sign-in evidence when the URL does not redirect", () => {
     expect(
       classifyOpenTablePage(

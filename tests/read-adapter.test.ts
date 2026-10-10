@@ -6,6 +6,8 @@ import { BrowserBridgeOpenTableReadAdapter } from "../src/opentable/bridge/read-
 import type {
   FindSlotsResult,
   GetBookingPreviewResult,
+  ListDiningAreasResult,
+  SearchRestaurantsResult,
 } from "../src/opentable/bridge/protocol.js";
 import { makeSlot, makeTarget } from "./fixtures.js";
 import { makeAvailabilityObservation } from "./opentable-fixtures.js";
@@ -42,6 +44,46 @@ class FakeBridgeClient implements OpenTableBridgeClientPort {
   async findSlots(): Promise<FindSlotsResult> {
     return this.response;
   }
+  async listDiningAreas(): Promise<ListDiningAreasResult> {
+    const slot = makeSlot();
+    return {
+      protocolVersion: 1,
+      id: "dining-areas-response",
+      type: "LIST_DINING_AREAS_RESULT",
+      request: {
+        baseSlotId: slot.id,
+        previewReference: slot.previewReference!,
+        restaurantId: slot.restaurantId,
+        date: slot.localDate,
+        time: slot.localTime,
+        partySize: slot.partySize,
+        seatingType: slot.seatingType,
+        reservationKind: slot.reservationKind,
+      },
+      candidates: [{
+        previewReference: "00000000-0000-4000-8000-000000000002",
+        diningArea: slot.diningArea!,
+      }],
+    };
+  }
+  async searchRestaurants(): Promise<SearchRestaurantsResult> {
+    return {
+      protocolVersion: 1,
+      id: "search-response",
+      type: "SEARCH_RESTAURANTS_RESULT",
+      request: { term: "sushi" },
+      data: {
+        results: [
+          {
+            restaurantId: "70204",
+            name: "Catch New York",
+            profileUrl: "https://www.opentable.com/r/catch-new-york",
+            bookable: true,
+          },
+        ],
+      },
+    };
+  }
   async getBookingPreview(): Promise<GetBookingPreviewResult> {
     const slot = makeSlot();
     return {
@@ -56,6 +98,7 @@ class FakeBridgeClient implements OpenTableBridgeClientPort {
         time: slot.localTime,
         partySize: slot.partySize,
         seatingType: slot.seatingType,
+        diningArea: slot.diningArea!,
         reservationKind: { kind: "standard" },
       },
       data: {
@@ -66,7 +109,7 @@ class FakeBridgeClient implements OpenTableBridgeClientPort {
         reservationType: "Standard",
         creditCardRequired: false,
         currencyCode: "USD",
-        diningArea: { id: 10, tableCategory: "default" },
+        diningArea: slot.diningArea!,
       },
     };
   }

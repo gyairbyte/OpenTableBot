@@ -1,0 +1,243 @@
+<#
+.SYNOPSIS
+  Starts the OpenTableBot bridge and operator console for interactive use.
+
+.DESCRIPTION
+  Brings up everything the operator console needs, in order:
+
+    1. the local bridge (unless something is already listening on its port);
+    2. the operator console on the loopback port;
+    3. a normal Chrome tab on OpenTable so the extension has an eligible page;
+    4. the console page in your default browser.
+
+  Both processes run hidden and log to .local/logs. Stop them with
+  stop-opentable.ps1, which is what the "Stop OpenTable" desktop icon runs.
+
+  The console defaults to LIVE mode. Pass -DryRun to prevent armed tasks from
+  submitting real reservations; the console can also switch mode from its
+  Booking mode control.
+
+  This script does not sign in to OpenTable. Chrome must already be signed in to
+  the profile it opens.
+
+  Pass -HoldOnError when launching from a shortcut so a failure stays on screen
+  instead of closing the window before it can be read.
+
+.EXAMPLE
+  .\start-opentable.ps1
+
+.EXAMPLE
+  .\start-opentable.ps1 -DryRun -NoBrowser
+
+.EXAMPLE
+  .\start-opentable.ps1 -NoOpenTable
+
+.EXAMPLE
+  # What the desktop icon runs: keep a failed start on screen
+  .\start-opentable.ps1 -HoldOnError
+#>
+param(
+  [int]$Port = 8790,
+  [int]$BridgePort = 38471,
+  [switch]$Execute,
+  [switch]$DryRun,
+  [switch]$NoBrowser,
+  [switch]$NoOpenTable,
+  [switch]$NoConsole,
+  [switch]$HoldOnError,
+  [int]$WaitSeconds = 45
+)
+
+$ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "opentable-runtime.ps1")
+
+$repo = Get-OpenTableRepoRoot -ScriptRoot $PSScriptRoot
+Set-Location $repo
+$logDirectory = Get-OpenTableLogDirectory -RepoRoot $repo
+Get-OpenTableRunDirectory -RepoRoot $repo | Out-Null
+
+# Anything that leaves the stack unusable should be visible after the run.
+$problems = New-Object System.Collections.Generic.List[string]
+
+try {
+  if ($Execute -and $DryRun) {
+    throw "Use either -Execute or -DryRun, not both."
+  }
+  $liveMode = -not $DryRun
+
+  if (-not (Test-Path -LiteralPath (Join-Path $repo "node_modules"))) {
+    throw "Dependencies are missing. Run 'npm ci' in $repo, then try again."
+  }
+
+  # Keep the bridge port consistent for both children and for the status check.
+  $env:OPENTABLE_BRIDGE_PORT = "$BridgePort"
+
+  $existing = Get-OpenTableProcessRecord -RepoRoot $repo
+  $bridgePid = $null
+  $consolePid = $null
+  $bridgeStarted = $false
+  $consoleStarted = $false
+
+  Write-Host "OpenTableBot startup" -ForegroundColor Cyan
+  Write-Host "Repository: $repo"
+
+  # 1. Bridge.
+  if (Test-OpenTablePort -Port $BridgePort) {
+    Write-Host "Bridge: already listening on port $BridgePort."
+  } else {
+    $bridgeProcess = Start-OpenTableBackgroundCommand `
+      -Command "npm run opentable:bridge" `
+      -WorkingDirectory $repo `
+      -LogPath (Join-Path $logDirectory "bridge.log")
+    $bridgePid = $bridgeProcess.Id
+    $bridgeStarted = $true
+    Write-Host "Bridge: starting (pid $bridgePid)."
+    if (-not (Wait-OpenTablePort -Port $BridgePort -TimeoutSeconds $WaitSeconds)) {
+      $problems.Add("The bridge did not open port $BridgePort within $WaitSeconds seconds. See $(Join-Path $logDirectory 'bridge.log').")
+    } else {
+      Write-Host "Bridge: listening on port $BridgePort." -ForegroundColor Green
+    }
+  }
+
+  # 2. Operator console.
+  if ($NoConsole) {
+    Write-Host "Console: skipped (-NoConsole)."
+  } else {
+    $consoleListening = Test-OpenTablePort -Port $Port
+    if ($consoleListening) {
+      $desiredMode = "dry-run"
+      if ($liveMode) { $desiredMode = "execute" }
+      $modeSwitched = $false
+      try {
+        $currentStatus = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/status" -TimeoutSec 15
+        if ($currentStatus.status.mode -ne $desiredMode) {
+          $modeBody = @{ mode = $desiredMode } | ConvertTo-Json -Compress
+          Invoke-RestMethod `
+            -Uri "http://127.0.0.1:$Port/api/mode" `
+            -Method Post `
+            -ContentType "application/json" `
+            -Body $modeBody | Out-Null
+          Write-Host "Console: switched to $desiredMode mode."
+        } else {
+          Write-Host "Console: already listening on port $Port in $desiredMode mode."
+        }
+        $modeSwitched = $true
+      } catch {
+        Write-Host "Console: existing process does not support mode switching; restarting it."
+        $existingConsolePid = Get-OpenTableListenerProcessId -Port $Port
+        if ($null -ne $existingConsolePid) {
+          Stop-OpenTableProcessTree -ProcessId $existingConsolePid | Out-Null
+          [void](Wait-OpenTablePort -Port $Port -TimeoutSeconds 15)
+          $consoleListening = Test-OpenTablePort -Port $Port
+        }
+      }
+      if (-not $modeSwitched -and $consoleListening) {
+        $problems.Add("The existing console could not be switched or stopped on port $Port.")
+      }
+    }
+    if (-not $consoleListening) {
+      $uiCommand = "npm run opentable:ui -- --port $Port"
+      if ($liveMode) { $uiCommand += " --execute" } else { $uiCommand += " --dry-run" }
+      $consoleProcess = Start-OpenTableBackgroundCommand `
+        -Command $uiCommand `
+        -WorkingDirectory $repo `
+        -LogPath (Join-Path $logDirectory "console.log")
+      $consolePid = $consoleProcess.Id
+      $consoleStarted = $true
+      Write-Host "Console: starting (pid $consolePid)."
+      if (-not (Wait-OpenTablePort -Port $Port -TimeoutSeconds $WaitSeconds)) {
+        $problems.Add("The console did not open port $Port within $WaitSeconds seconds. See $(Join-Path $logDirectory 'console.log').")
+      } else {
+        Write-Host "Console: listening on port $Port." -ForegroundColor Green
+      }
+    }
+  }
+
+  # Remember what this launcher started so Stop only reports on real processes.
+  $mode = "dry-run"
+  if ($liveMode) { $mode = "execute" }
+  Save-OpenTableProcessRecord -RepoRoot $repo -Record ([pscustomobject]@{
+    startedAt    = (Get-Date).ToUniversalTime().ToString("o")
+    mode         = $mode
+    port         = $Port
+    bridgePort   = $BridgePort
+    bridgePid    = $bridgePid
+    consolePid   = $consolePid
+    bridgeStartedByLauncher  = $bridgeStarted
+    consoleStartedByLauncher = $consoleStarted
+    previousRecordPresent    = ($null -ne $existing)
+  })
+
+  # 3. Open a normal Chrome OpenTable tab so the paired extension can bind an
+  #    eligible page. This is separate from the console browser below because
+  #    the console is not the page that owns the signed-in OpenTable session.
+  if (-not $NoBrowser -and -not $NoOpenTable) {
+    $chrome = Find-OpenTableChrome
+    if ($null -eq $chrome) {
+      $problems.Add("chrome.exe was not found. Open an OpenTable tab manually or install Chrome.")
+    } else {
+      Start-Process -FilePath $chrome -ArgumentList "https://www.opentable.com/" | Out-Null
+      Write-Host "Opened https://www.opentable.com/ in Chrome."
+    }
+  }
+
+  # 4. Report readiness, then open the console.
+  Write-Host ""
+  Write-Host "Booking mode: $mode"
+  if ($liveMode) {
+    Write-Host "WRITE MODE: armed tasks submitted from this console create real reservations." -ForegroundColor Yellow
+  } else {
+    Write-Host "Dry run: no reservation can be submitted from this console." -ForegroundColor Green
+  }
+
+  if (-not $NoConsole -and (Test-OpenTablePort -Port $Port)) {
+    $statusText = "the status endpoint did not answer yet"
+    $sessionAuthenticated = $false
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+      $status = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/status" -TimeoutSec 15
+      $bridgeState = "unreachable"
+      if ($status.status.bridgeReachable) { $bridgeState = "reachable" }
+      $sessionState = "not authenticated"
+      if ($status.status.authenticated) {
+        $sessionState = "authenticated"
+        $sessionAuthenticated = $true
+      }
+      $statusText = "bridge $bridgeState, session $sessionState"
+    } catch {
+      $statusText = "the status endpoint did not answer yet"
+      $problems.Add("The console status endpoint did not answer.")
+    }
+    $ErrorActionPreference = $previousPreference
+    Write-Host "Status: $statusText"
+    if (-not $sessionAuthenticated) {
+      Write-Host "Keep a signed-in OpenTable tab open in Chrome for reads to work." -ForegroundColor Yellow
+    }
+  }
+
+  if (-not $NoBrowser -and -not $NoConsole -and (Test-OpenTablePort -Port $Port)) {
+    Start-Process "http://127.0.0.1:$Port/" | Out-Null
+    Write-Host "Opened http://127.0.0.1:$Port/ in your browser."
+  }
+
+  Write-Host ""
+  Write-Host "Logs: $logDirectory"
+  Write-Host "Stop with the 'Stop OpenTable' icon or scripts\stop-opentable.ps1."
+} catch {
+  $problems.Add($_.Exception.Message)
+}
+
+if ($problems.Count -gt 0) {
+  Write-Host ""
+  Write-Host "OpenTableBot needs attention:" -ForegroundColor Red
+  foreach ($problem in $problems) { Write-Host "  - $problem" -ForegroundColor Red }
+  # A shortcut window closes the moment the script exits, which would hide the
+  # reason. Only hold when a caller asked for it, so automation never blocks.
+  if ($HoldOnError) {
+    Write-Host ""
+    [void](Read-Host "Press Enter to close this window")
+  }
+  exit 1
+}
+

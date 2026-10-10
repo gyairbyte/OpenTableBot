@@ -36,7 +36,10 @@ describe("slot matching", () => {
 
   it("rejects disallowed seating", () => {
     expect(
-      getSlotRejectionReasons(makeTarget(), makeSlot({ seatingType: "bar" })),
+      getSlotRejectionReasons(makeTarget(), makeSlot({
+        seatingType: "bar",
+        diningArea: { category: "bar", label: "Bar", providerOrder: 0 },
+      })),
     ).toContain(SlotRejectionReason.SEATING_NOT_ALLOWED);
   });
 });
@@ -64,7 +67,11 @@ describe("slot ranking", () => {
 
   it("then uses seating preference and stable ID", () => {
     const ranked = rankAcceptableSlots(makeTarget(), [
-      makeSlot({ id: "z-outdoor", seatingType: "outdoor" }),
+      makeSlot({
+        id: "z-outdoor",
+        seatingType: "outdoor",
+        diningArea: { category: "outdoor", label: "Patio", providerOrder: 1 },
+      }),
       makeSlot({ id: "z-standard", seatingType: "standard" }),
       makeSlot({ id: "a-standard", seatingType: "standard" }),
     ]);

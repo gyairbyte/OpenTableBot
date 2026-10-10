@@ -8,8 +8,10 @@ import {
   type BridgeMessage,
   type ErrorMessage,
   type Ready,
+  type LockProgress,
   parseBridgeMessage,
 } from "./protocol.js";
+import { advanceLockStage, classifyInterruptedLock } from "./lock-lifecycle.js";
 
 interface ConnectionState {
   authenticated: boolean;
@@ -19,6 +21,8 @@ interface ConnectionState {
 interface PendingRequest {
   readonly controller: WebSocket;
   readonly timer: NodeJS.Timeout;
+  readonly requestType: BridgeMessage["type"];
+  latestLockStage?: LockProgress["stage"];
 }
 
 export interface BridgeServerOptions {
@@ -198,7 +202,14 @@ export class OpenTableBridgeServer {
     if (
       message.type !== "AUTH_STATUS" &&
       message.type !== "FIND_SLOTS" &&
-      message.type !== "GET_BOOKING_PREVIEW"
+      message.type !== "LIST_DINING_AREAS" &&
+      message.type !== "SEARCH_RESTAURANTS" &&
+      message.type !== "GET_BOOKING_PREVIEW" &&
+      message.type !== "AUTHORIZE_BOOKING" &&
+      message.type !== "LOCK_SLOT" &&
+      message.type !== "ACKNOWLEDGE_LOCK" &&
+      message.type !== "REVALIDATE_PREPARED_BOOKING" &&
+      message.type !== "SUBMIT_RESERVATION"
     ) {
       send(socket, errorMessage(message.id, "MALFORMED_MESSAGE", "Controller message is not allowed"));
       return;
@@ -215,16 +226,31 @@ export class OpenTableBridgeServer {
       send(socket, errorMessage(message.id, "MALFORMED_MESSAGE", "Request ID is already in use"));
       return;
     }
-    const delay = Math.max(1, message.deadlineEpochMs - Date.now());
-    if (delay <= 1) {
-      send(socket, errorMessage(message.id, "DEADLINE_EXCEEDED", "Request deadline has elapsed"));
+    const remainingMs = message.deadlineEpochMs - Date.now();
+    const minimumDispatchBudgetMs = 250;
+    if (remainingMs < minimumDispatchBudgetMs) {
+      const code = message.type === "LOCK_SLOT" ? "LOCK_NOT_DISPATCHED" : "DEADLINE_EXCEEDED";
+      send(socket, errorMessage(message.id, code, `${code}: request deadline has elapsed`));
       return;
     }
+    const delay = remainingMs;
     const timer = setTimeout(() => {
+      const pending = this.pending.get(message.id);
       this.pending.delete(message.id);
-      send(socket, errorMessage(message.id, "DEADLINE_EXCEEDED", "Chrome request exceeded its deadline"));
+      if (message.type === "LOCK_SLOT") {
+        const outcome = classifyInterruptedLock(pending?.latestLockStage);
+        send(socket, errorMessage(message.id, outcome, `${outcome}: Chrome lock request exceeded its deadline`));
+        if (this.extension?.readyState === WebSocket.OPEN) {
+          send(this.extension, {
+            protocolVersion: BRIDGE_PROTOCOL_VERSION,
+            id: message.id,
+            type: "ABANDON_LOCK_OPERATION",
+            reason: "DEADLINE",
+          });
+        }
+      } else send(socket, errorMessage(message.id, "DEADLINE_EXCEEDED", "Chrome request exceeded its deadline"));
     }, delay);
-    this.pending.set(message.id, { controller: socket, timer });
+    this.pending.set(message.id, { controller: socket, timer, requestType: message.type });
     send(this.extension, message);
   }
 
@@ -247,7 +273,15 @@ export class OpenTableBridgeServer {
     if (
       message.type !== "AUTH_STATUS_RESULT" &&
       message.type !== "FIND_SLOTS_RESULT" &&
+      message.type !== "LIST_DINING_AREAS_RESULT" &&
+      message.type !== "SEARCH_RESTAURANTS_RESULT" &&
       message.type !== "GET_BOOKING_PREVIEW_RESULT" &&
+      message.type !== "AUTHORIZE_BOOKING_RESULT" &&
+      message.type !== "LOCK_SLOT_RESULT" &&
+      message.type !== "ACKNOWLEDGE_LOCK_RESULT" &&
+      message.type !== "REVALIDATE_PREPARED_BOOKING_RESULT" &&
+      message.type !== "SUBMIT_RESERVATION_RESULT" &&
+      message.type !== "LOCK_PROGRESS" &&
       message.type !== "ERROR"
     ) {
       send(socket, errorMessage(message.id, "MALFORMED_MESSAGE", "Extension message is not allowed"));
@@ -255,6 +289,17 @@ export class OpenTableBridgeServer {
     }
     const pending = this.pending.get(message.id);
     if (pending === undefined) return;
+    if (message.type === "LOCK_PROGRESS") {
+      pending.latestLockStage = advanceLockStage(pending.latestLockStage, message.stage);
+      this.options.onStatus?.(JSON.stringify({
+        correlationId: message.id,
+        stage: message.stage,
+        elapsedMs: message.elapsedMs,
+        ...(message.outcome === undefined ? {} : { outcome: message.outcome }),
+      }));
+      send(pending.controller, message);
+      return;
+    }
     clearTimeout(pending.timer);
     this.pending.delete(message.id);
     send(pending.controller, message);
@@ -268,12 +313,23 @@ export class OpenTableBridgeServer {
       this.options.onStatus?.("Extension disconnected");
       for (const [id, pending] of this.pending) {
         clearTimeout(pending.timer);
-        send(pending.controller, errorMessage(id, "EXTENSION_UNAVAILABLE", "Chrome extension disconnected"));
+        const outcome = pending.requestType === "LOCK_SLOT"
+          ? classifyInterruptedLock(pending.latestLockStage)
+          : "EXTENSION_UNAVAILABLE";
+        send(pending.controller, errorMessage(id, outcome, `${outcome}: Chrome extension disconnected`));
       }
       this.pending.clear();
     }
     for (const [id, pending] of this.pending) {
       if (pending.controller === socket) {
+        if (pending.requestType === "LOCK_SLOT" && this.extension?.readyState === WebSocket.OPEN) {
+          send(this.extension, {
+            protocolVersion: BRIDGE_PROTOCOL_VERSION,
+            id,
+            type: "ABANDON_LOCK_OPERATION",
+            reason: "CONTROLLER_DISCONNECTED",
+          });
+        }
         clearTimeout(pending.timer);
         this.pending.delete(id);
       }

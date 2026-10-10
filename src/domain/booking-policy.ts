@@ -1,5 +1,11 @@
 import { z } from "zod";
 import type { BookingTarget } from "./booking-target.js";
+import {
+  effectiveDiningAreaPolicy,
+  isDiningAreaAllowed,
+  legacySeatingCategory,
+  sameDiningAreaOption,
+} from "./dining-area.js";
 import type { BookingPreview } from "./reservation-slot.js";
 import type { ReservationSlot } from "./reservation-slot.js";
 
@@ -102,7 +108,15 @@ export function evaluateBookingPreview(
   }
   if (
     preview.seatingType !== slot.seatingType ||
-    !target.allowedSeatingTypes.includes(preview.seatingType)
+    !sameDiningAreaOption(preview.diningArea, slot.diningArea) ||
+    !isDiningAreaAllowed(
+      effectiveDiningAreaPolicy(target),
+      preview.diningArea ?? {
+        category: legacySeatingCategory(preview.seatingType),
+        label: preview.seatingType,
+        providerOrder: 0,
+      },
+    )
   ) {
     reasons.push(PolicyRejectionReason.UNEXPECTED_SEATING);
   }
@@ -120,9 +134,14 @@ export function evaluateBookingPreview(
   if (preview.reservationKind.kind === "unknown") {
     reasons.push(PolicyRejectionReason.UNKNOWN_RESERVATION_KIND);
   }
-  if (preview.currency.status === "unknown") {
+  const hasMonetaryExposure =
+    preview.prepaid.status !== "not-required" ||
+    preview.cancellationFee.status !== "none" ||
+    preview.noShowFee.status !== "none" ||
+    preview.paymentRequirement !== "not-required";
+  if (preview.currency.status === "unknown" && hasMonetaryExposure) {
     reasons.push(PolicyRejectionReason.CURRENCY_UNKNOWN);
-  } else if (preview.currency.code !== policy.currency) {
+  } else if (preview.currency.status === "known" && preview.currency.code !== policy.currency) {
     reasons.push(PolicyRejectionReason.CURRENCY_MISMATCH);
   }
   if (preview.paymentRequirement === "unknown") {

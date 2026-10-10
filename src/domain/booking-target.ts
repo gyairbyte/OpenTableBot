@@ -6,6 +6,9 @@ import {
   LocalTimeSchema,
   SeatingTypeSchema,
 } from "./primitives.js";
+import {
+  DiningAreaPolicySchema,
+} from "./dining-area.js";
 
 export const BookingTargetModeSchema = z.enum([
   "known-drop",
@@ -21,6 +24,8 @@ export const BookingTargetSchema = z
       id: z.string().min(1),
       name: z.string().min(1),
       timeZone: IanaTimeZoneSchema,
+      /** OpenTable restaurant profile URL or relative profile path. */
+      profileUrl: z.string().min(1).max(300).optional(),
     }),
     dateRange: z.object({
       startDate: LocalDateSchema,
@@ -32,7 +37,9 @@ export const BookingTargetSchema = z
       latest: LocalTimeSchema,
       preferred: LocalTimeSchema,
     }),
-    allowedSeatingTypes: z.array(SeatingTypeSchema).min(1),
+    /** Compatibility shorthand. New targets should use diningAreaPolicy. */
+    allowedSeatingTypes: z.array(SeatingTypeSchema).min(1).optional(),
+    diningAreaPolicy: DiningAreaPolicySchema.optional(),
     bookingPolicy: BookingPolicySchema,
     mode: BookingTargetModeSchema,
     knownReservationReleaseAt: z.string().datetime({ offset: true }).optional(),
@@ -62,13 +69,25 @@ export const BookingTargetSchema = z
         message: "Preferred time must be within the acceptable window",
       });
     }
-    if (new Set(target.allowedSeatingTypes).size !== target.allowedSeatingTypes.length) {
+    if (
+      target.allowedSeatingTypes !== undefined &&
+      new Set(target.allowedSeatingTypes).size !== target.allowedSeatingTypes.length
+    ) {
       context.addIssue({
         code: "custom",
         path: ["allowedSeatingTypes"],
         message: "Allowed seating types must be unique and ordered by preference",
       });
     }
+    if (target.allowedSeatingTypes !== undefined && target.diningAreaPolicy !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["diningAreaPolicy"],
+        message: "Use diningAreaPolicy or legacy allowedSeatingTypes, not both",
+      });
+    }
   });
 
 export type BookingTarget = z.infer<typeof BookingTargetSchema>;
+
+export { effectiveDiningAreaPolicy } from "./dining-area.js";

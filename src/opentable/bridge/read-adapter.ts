@@ -1,16 +1,32 @@
+import { createHash } from "node:crypto";
 import type { BookingTarget } from "../../domain/booking-target.js";
 import type {
   BookingPreview,
   ReservationSlot,
 } from "../../domain/reservation-slot.js";
-import type { AuthenticationStatus, OpenTableReadAdapter } from "../adapter.js";
+import type {
+  AuthenticationStatus,
+  OpenTableReadAdapter,
+  RestaurantSearchQuery,
+} from "../adapter.js";
 import { AdapterFailureCategory, OpenTableAdapterError } from "../errors.js";
 import { normalizeAvailabilityObservation } from "../browser/slot-normalizer.js";
 import { normalizeBookingPreview } from "../browser/preview-normalizer.js";
+import {
+  SafeSearchResultsSchema,
+  type SafeSearchResults,
+} from "../browser/search-types.js";
+import {
+  getSlotRejectionReasons,
+  isSlotAcceptable,
+  SlotRejectionReason,
+} from "../../domain/slot-matcher.js";
 import { BridgeClientError, type OpenTableBridgeClient } from "./client.js";
 import type {
   FindSlotsResult,
   GetBookingPreviewResult,
+  ListDiningAreasResult,
+  SearchRestaurantsResult,
 } from "./protocol.js";
 
 export interface OpenTableBridgeClientPort {
@@ -18,6 +34,10 @@ export interface OpenTableBridgeClientPort {
   close(): void;
   authenticationStatus(): Promise<AuthenticationStatus>;
   findSlots(request: FindSlotsResult["request"]): Promise<FindSlotsResult>;
+  listDiningAreas(request: ListDiningAreasResult["request"]): Promise<ListDiningAreasResult>;
+  searchRestaurants(
+    request: SearchRestaurantsResult["request"],
+  ): Promise<SearchRestaurantsResult>;
   getBookingPreview(
     request: GetBookingPreviewResult["request"],
   ): Promise<GetBookingPreviewResult>;
@@ -48,7 +68,7 @@ function datesInRange(startDate: string, endDate: string): string[] {
   return dates;
 }
 
-function mapBridgeError(error: unknown): never {
+export function mapBridgeError(error: unknown): never {
   if (!(error instanceof BridgeClientError)) throw error;
   const category =
     error.code === "OPENTABLE_AUTHENTICATION_REQUIRED"
@@ -58,7 +78,31 @@ function mapBridgeError(error: unknown): never {
         : error.code === "ACCESS_CONTROL_RESPONSE"
           ? AdapterFailureCategory.ACCESS_CONTROL_RESPONSE
           : error.code === "RATE_LIMITED"
-            ? AdapterFailureCategory.RATE_LIMITED
+          ? AdapterFailureCategory.RATE_LIMITED
+          : error.code === "LOCK_REJECTED"
+            ? AdapterFailureCategory.LOCK_REJECTED
+            : error.code === "LOCK_NOT_DISPATCHED"
+              ? AdapterFailureCategory.LOCK_NOT_DISPATCHED
+              : error.code === "LOCK_OUTCOME_UNKNOWN"
+                ? AdapterFailureCategory.LOCK_OUTCOME_UNKNOWN
+                : error.code === "REVALIDATION_OUTCOME_UNKNOWN"
+                  ? AdapterFailureCategory.REVALIDATION_OUTCOME_UNKNOWN
+            : error.code === "LOCK_EXPIRED" || error.code === "BOOKING_AUTHORIZATION_EXPIRED"
+              ? AdapterFailureCategory.LOCK_EXPIRED
+              : error.code === "BOOKING_INVARIANT_MISMATCH"
+                ? AdapterFailureCategory.INVARIANT_MISMATCH
+                : error.code === "TERMS_CHANGED"
+                  ? AdapterFailureCategory.TERMS_CHANGED
+                  : error.code === "PAYMENT_REQUIRED"
+                    ? AdapterFailureCategory.PAYMENT_REQUIRED
+                    : error.code === "SCA_REQUIRED"
+                      ? AdapterFailureCategory.STRONG_AUTHENTICATION_REQUIRED
+                      : error.code === "SUBMISSION_REJECTED"
+                        ? AdapterFailureCategory.SUBMISSION_REJECTED
+                        : error.code === "SUBMISSION_OUTCOME_UNKNOWN"
+                          ? AdapterFailureCategory.SUBMISSION_OUTCOME_UNKNOWN
+                          : error.code === "DUPLICATE_SUBMISSION_PREVENTED"
+                            ? AdapterFailureCategory.DUPLICATE_SUBMISSION_PREVENTED
             : error.code === "EXTENSION_UNAVAILABLE" || error.code === "DEADLINE_EXCEEDED"
       ? AdapterFailureCategory.TRANSIENT_TRANSPORT
       : error.code === "PAGE_NOT_READY"
@@ -93,6 +137,22 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
     } catch (error) {
       mapBridgeError(error);
     }
+  }
+
+  async searchRestaurants(query: RestaurantSearchQuery): Promise<SafeSearchResults> {
+    const request: SearchRestaurantsResult["request"] = {
+      term: query.term,
+      ...(query.date === undefined ? {} : { date: query.date }),
+      ...(query.time === undefined ? {} : { time: query.time }),
+      ...(query.partySize === undefined ? {} : { partySize: query.partySize }),
+    };
+    let result: SearchRestaurantsResult;
+    try {
+      result = await this.client.searchRestaurants(request);
+    } catch (error) {
+      mapBridgeError(error);
+    }
+    return SafeSearchResultsSchema.parse(result.data);
   }
 
   async findSlots(target: BookingTarget): Promise<readonly ReservationSlot[]> {
@@ -133,7 +193,60 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
         target,
         requestedDate,
       );
-      normalizedSlots.push(...normalized.slots);
+      for (const slot of normalized.slots) {
+        const baseRejections = getSlotRejectionReasons(target, slot).filter(
+          (reason) => reason !== SlotRejectionReason.SEATING_NOT_ALLOWED,
+        );
+        if (baseRejections.length > 0) {
+          this.options.onDiagnostic?.(
+            `Slot ${slot.localDate} ${slot.localTime} ${slot.seatingType} rejected before dining-area discovery: ${baseRejections.join(", ")}`,
+          );
+          continue;
+        }
+        if (slot.previewReference === undefined) {
+          this.options.onDiagnostic?.(
+            `Slot ${slot.localDate} ${slot.localTime} ${slot.seatingType} has no browser preview reference; availability operation may not have been captured`,
+          );
+          continue;
+        }
+        let discovered: ListDiningAreasResult;
+        try {
+          discovered = await this.client.listDiningAreas({
+            baseSlotId: slot.id,
+            previewReference: slot.previewReference,
+            restaurantId: slot.restaurantId,
+            date: slot.localDate,
+            time: slot.localTime,
+            partySize: slot.partySize,
+            seatingType: slot.seatingType,
+            reservationKind: slot.reservationKind.kind === "experience"
+              ? { kind: "experience", experienceId: slot.reservationKind.experienceId }
+              : slot.reservationKind,
+          });
+        } catch (error) {
+          mapBridgeError(error);
+        }
+        if (discovered.candidates.length === 0) {
+          this.options.onDiagnostic?.(
+            `Slot ${slot.localDate} ${slot.localTime} ${slot.seatingType} produced no exact dining-area candidates`,
+          );
+        }
+        for (const candidate of discovered.candidates) {
+          const digest = createHash("sha256")
+            .update(`${slot.id}|${candidate.diningArea.category}|${candidate.diningArea.label}|${candidate.diningArea.providerOrder}`)
+            .digest("hex")
+            .slice(0, 20);
+          const exactCandidate: ReservationSlot = {
+            ...slot,
+            id: `ot-area-${digest}`,
+            previewReference: candidate.previewReference,
+            diningArea: candidate.diningArea,
+          };
+          if (isSlotAcceptable(target, exactCandidate)) {
+            normalizedSlots.push(exactCandidate);
+          }
+        }
+      }
       for (const diagnostic of normalized.diagnostics) {
         this.options.onDiagnostic?.(`Unknown seating label normalized to other: ${diagnostic.label}`);
       }
@@ -160,6 +273,12 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
         "The selected slot has no current browser preview reference; find slots again",
       );
     }
+    if (slot.diningArea === undefined) {
+      throw new OpenTableAdapterError(
+        AdapterFailureCategory.INVARIANT_MISMATCH,
+        "The selected slot has no exact dining-area evidence; find slots again",
+      );
+    }
     let result: GetBookingPreviewResult;
     try {
       result = await this.client.getBookingPreview({
@@ -170,6 +289,7 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
         time: slot.localTime,
         partySize: target.partySize,
         seatingType: slot.seatingType,
+        diningArea: slot.diningArea,
         reservationKind:
           slot.reservationKind.kind === "experience"
             ? {

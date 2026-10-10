@@ -4,6 +4,25 @@ Phase 1B uses the user's normal Chrome session plus an unpacked read-only MV3
 extension. Node does not launch or control Chrome and does not read a Chrome
 profile.
 
+Phase 3 adds only five explicit controlled-booking operations:
+`AUTHORIZE_BOOKING`, `LOCK_SLOT`, `ACKNOWLEDGE_LOCK`,
+`REVALIDATE_PREPARED_BOOKING`, and `SUBMIT_RESERVATION`. None accepts a URL,
+method, headers, provider request body, JavaScript, provider token, or payment
+data. MAIN-world code owns the fixed Standard provider operations.
+
+`opentable:book` is live by default. Pass `--dry-run` after checking the exact
+displayed selection when you want a non-submitting test. If a dispatched
+submission cannot be confirmed, it returns terminal `OUTCOME_UNKNOWN`; do not
+retry before checking the user's OpenTable reservations manually.
+
+`LOCK_SLOT` uses one absolute deadline across Node and Chrome. Its sanitized
+stage log distinguishes a timeout before provider dispatch
+(`LOCK_NOT_DISPATCHED`) from any interruption after dispatch
+(`LOCK_OUTCOME_UNKNOWN`). A confirmed response is not submit-capable until Node
+acknowledges it and a separate post-lock revalidation succeeds. If the bridge
+disconnects, the content request expires, or a result arrives after abandonment,
+the browser-local handle is orphaned and can only expire; it is never submitted.
+
 ## Build, load, and pair
 
 ```sh
@@ -54,9 +73,13 @@ After `opentable:slots` has produced a current slot, run the
 contains a random ten-minute browser-local reference; provider slot hashes and
 availability tokens remain in MAIN-world memory.
 
-The preview reference can perform only a credentialed same-origin
+The base preview reference can perform only a credentialed same-origin
 `GET /booking/details` for the exact observed restaurant, date, time, party,
-seating, and Experience. The response is read as text and its JSON state is
+seating, and Experience. Chrome enumerates provider dining areas from that
+response in provider order and creates one opaque reference per exact provider
+identity. Node receives only category, sanitized label, provider order, and the
+opaque reference—never the provider dining-area ID. A candidate reference can
+repeat the same fixed GET and must re-establish that exact identity. The response is read as text and its JSON state is
 allowlisted before Node receives it. The extension never navigates to or
 executes the checkout page, and it contains no
 `BookDetailsStandardSlotLock`, `BookDetailsExperienceSlotLock`, or
@@ -67,12 +90,20 @@ are unknown. That is intentional fail-closed behavior. Saved cards, account
 profile fields, card identifiers, payment tokens, cookies, authorization
 headers, and the query-bearing booking-details URL are never returned to Node.
 
+Dining-area policy defaults to `ANY` with provider-order selection. Unknown
+labels remain usable under `ANY`, while `ALLOW` and `PREFER` provide explicit
+category/label control. Standard/Experience authorization remains separate.
+Candidate selection previews options in deterministic order and never locks.
+
 ## Recovery and revocation
 
 - Bridge offline: restart `npm run opentable:bridge`; the stored credential is
   reused and the extension reconnects.
-- Extension not connected: confirm the bridge is running on port 38471, reload
-  the unpacked extension, and inspect its popup status.
+- Extension not connected: confirm the bridge is running on port 38471, then
+  inspect the popup status. The extension keeps a repeating MV3 alarm as a
+  wake-up fallback, so a stopped bridge normally reconnects without a manual
+  reload. Reload the unpacked extension if it was updated or the popup still
+  reports it as paired but disconnected.
 - Page operation unavailable: reload/visit a normal restaurant availability
   page and perform an ordinary search so `RestaurantsAvailability` is observed.
 - Pairing lost or suspected credential exposure: stop the bridge and run

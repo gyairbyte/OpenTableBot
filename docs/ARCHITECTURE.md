@@ -17,15 +17,20 @@ BookingTarget / CLI
 
 ## Phase 2 read-only booking preview
 
-Each available slot may carry a random, short-lived `previewReference`. The
-reference is not an OpenTable token: it addresses an in-memory record inside
-the page bridge. Slot hashes and availability tokens never leave Chrome.
+Each available time may carry a random, short-lived base `previewReference`.
+The reference is not an OpenTable token: it addresses an in-memory record
+inside the page bridge. A fixed details read discovers provider-ordered dining
+areas and creates one new opaque reference per exact booking candidate. Slot
+hashes, availability tokens, and dining-area IDs never leave Chrome.
 
 ```text
-BookingTarget + selected ReservationSlot
+BookingTarget + observed time
+    -> LIST_DINING_AREAS (fixed read-only details request)
+    -> distinct sanitized candidates in provider order
+BookingTarget + selected exact ReservationSlot
     -> GET_BOOKING_PREVIEW (strict bridge request)
     -> validate previewReference against observed restaurant/date/time/party/
-       seating/Experience
+       broad seating/exact dining area/Experience
     -> fixed same-origin GET /booking/details
     -> parse __INITIAL_STATE__ as JSON without executing its scripts
     -> in-Chrome allowlist projection
@@ -63,7 +68,9 @@ capability.
 
 The isolated content script projects the result onto an allowlist before it can
 reach Node. Allowed response fields are restaurant ID, day offset, availability,
-relative/authoritative time, seating attributes, and seating type. Availability
+relative/authoritative time, seating attributes, and seating type. Dining-area
+discovery adds only normalized category, a sanitized provider label, provider
+order, and a new opaque preview reference. Availability
 tokens, booking hashes, cookies, authorization data, account data, and all
 unrecognized fields are removed. The Node normalizer then checks request/
 response restaurant, date, time, and party invariants and fails closed on
@@ -73,9 +80,54 @@ Readiness metadata contains only the canonical OpenTable origin and pathname.
 All URL query parameters and fragments are stripped inside Chrome so opaque
 page state cannot cross the bridge as part of a status message.
 
+## Restaurant search and operator console
+
+Search reuses the same relay as every other read. The MAIN-world bridge issues
+one fixed same-origin `GET /s` and parses `__INITIAL_STATE__` as JSON without
+executing its scripts; no write and no CSRF token is involved.
+
+```text
+search term (+ optional date, time, party)
+    -> SEARCH_RESTAURANTS (strict bridge request)
+    -> fixed same-origin GET /s
+    -> parse __INITIAL_STATE__ as JSON
+    -> in-Chrome projection onto SafeSearchResults
+    -> strict bridge schema (max 30 bounded results)
+```
+
+A sanitized result carries only restaurant ID, name, a path-only
+`www.opentable.com` profile URL, a bookable flag, and optional cuisine, metro,
+and price band. Non-OpenTable links, provider state, availability tokens, and
+unrecognized fields are dropped inside Chrome.
+
+The operator console (`src/ui`) is a loopback HTTP server that exposes search,
+an availability probe, a terms preview, version-guarded target CRUD, and
+scheduler status, and embeds the same `ReservationScheduler` tick loop the CLI
+runs. It adds no provider capability: every page interaction still travels
+through the bridge, and the console's booking mode is fixed when the process
+starts.
+
+The probe and preview routes reuse the engine's read path under a policy that
+cannot authorize anything, so a page that can reach the loopback socket still
+cannot escalate itself into a write:
+
+```text
+POST /api/probe   -> findSlots under PROBE_BOOKING_POLICY (autoBookAuthorized: false)
+                     -> available times + provider dining areas + (time, area) options
+POST /api/preview -> findSlots narrowed to one time -> getBookingPreview
+                     -> evaluateBookingPreview -> exact terms + allowed | rejection reasons
+```
+
+Editing is a `PUT /api/targets/:id` that rewrites the stored definition while
+keeping the record's state and version chain. Mid-flight and terminal states are
+refused, and the write still goes through the store's version check, so an edit
+can never change the terms of a booking that is already in progress.
+
 ## Permission rationale
 
 - `storage`: retain the random local bridge credential and configured port.
+- `alarms`: wake the paired MV3 service worker so a transport reconnect is not
+  lost when an in-memory timer is discarded.
 - `https://www.opentable.com/*`: run the two bridge scripts only on OpenTable's
   canonical web origin.
 - `http://127.0.0.1/*`: permit the extension's WebSocket connection to the
@@ -84,15 +136,89 @@ page state cannot cross the bridge as part of a status message.
 The extension requests no cookies, tabs, scripting, webRequest, debugger,
 native messaging, downloads, history, identity, or broad website permission.
 
-## Adapter separation and future flow
+## Phase 3 controlled booking flow
+
+```text
+exact slot + sanitized preview + approved policy
+    -> AUTHORIZE_BOOKING (30-second, one-time capability)
+    -> LOCK_SLOT (fixed BookDetailsStandardSlotLock mutation; 25-second deadline)
+    -> LOCK_CONFIRMED + opaque pending handle (raw lock/tokens remain in MAIN world)
+    -> ACKNOWLEDGE_LOCK
+    -> REVALIDATE_PREPARED_BOOKING (fixed GET /booking/details)
+    -> sanitized, policy-approved PreparedBooking
+    -> SUBMIT_RESERVATION (fixed /dapi/booking/make-reservation POST)
+    -> sanitized confirmation | OUTCOME_UNKNOWN
+```
+
+Every capability and prepared handle is an unguessable browser-generated UUID
+bound to the target, slot, restaurant, date, time, offset timestamp, party,
+seating, exact dining area, Standard kind, preview reference, and exact approved preview. The lock
+capability is single-use. Prepared handles use a conservative 60-second local
+expiry because the current provider lock is short-lived and its response does
+not expose a dependable expiry.
+
+Raw slot hashes, availability tokens, slot-lock IDs, profile PII, cookies,
+saved payment state, and provider security tokens remain in MAIN-world memory.
+The submission state changes to `SUBMITTING` before dispatch. Confirmed and
+ambiguous results are cached; the provider POST is never repeated for that
+handle. A post-dispatch timeout, connection loss, 5xx, malformed success, or
+missing confirmation becomes terminal `OUTCOME_UNKNOWN`.
+
+### Lock deadline and interruption model
+
+Node creates one absolute 25-second lock deadline and sends it unchanged through
+the loopback server, MV3 service worker, content script, and MAIN-world request.
+The provider fetch gets only the remaining duration minus a 250 ms response
+margin. The bridge server and Node wait against that same absolute deadline;
+there are no nested 15/20-second lock timers that can expire first.
+
+The provider dispatch boundary is the MAIN-world `fetch` initiation. An
+interruption before `PROVIDER_DISPATCHED` is `LOCK_NOT_DISPATCHED`. An
+interruption at or after it is `LOCK_OUTCOME_UNKNOWN`, never an automatic retry.
+Only an explicit provider failure payload is `LOCK_REJECTED`; a non-success HTTP
+response without a definitive lock payload remains unknown after dispatch.
+
+Lock and revalidation are separate requests. A confirmed lock first creates a
+browser-local `PENDING_ACK` record. Node must receive the correlated result and
+send `ACKNOWLEDGE_LOCK`, after which a separate revalidation may move it from
+`ACKNOWLEDGED` to `REVALIDATED`. Only `REVALIDATED` is submit-capable. If Node,
+the WebSocket, service worker, content script, or page operation abandons the
+lock, a late success is `ORPHANED`. Revalidation that finishes after its caller
+deadline also stays `ORPHANED`; neither state can be submitted.
+
+Sanitized lock telemetry uses one correlation ID and monotonic stages:
+`LOCK_REQUEST_ACCEPTED`, `PAGE_OPERATION_RECEIVED`, `PROVIDER_DISPATCHED`,
+`PROVIDER_RESPONSE_RECEIVED`, `LOCK_PARSED`, `PREPARED_STATE_CREATED`,
+`RESPONSE_SENT_TO_NODE`, and `RESPONSE_RECEIVED_BY_NODE`. Events contain only
+the ID, stage, elapsed milliseconds, and optional outcome category—never raw
+provider payloads, slot hashes, cookies, credentials, or payment data.
+
+MV3 reconnect cannot make an interrupted write safe. The active service worker
+marks in-flight lock IDs abandoned when its WebSocket closes. A service-worker
+restart or page navigation can lose volatile correlation and therefore fails
+closed as unknown after dispatch; raw lock material is never persisted. A late
+response with no live pending Node request is discarded, while its MAIN-world
+record remains pending/unusable or is explicitly orphaned and expires naturally.
+
+Extension-initiated WebSocket closure uses browser-valid codes only: `1000` for
+normal pairing completion and private application code `4008` for malformed or
+unsupported protocol input. Node may still send standard RFC status code `1008`
+from the server side. A stopped local bridge remains an ordinary transport
+failure: the extension supplies no application close code. A quick in-memory
+retry is backed by a repeating `chrome.alarms` event, which can wake the service
+worker after its timer has been discarded; no authentication or lock safety is
+weakened.
+
+## Adapter separation
 
 `OpenTableReadAdapter` exposes authentication checking, slot discovery, and
 read-only `getBookingPreview`. A preview is a `BookingPreview`, not a
 `PreparedBooking`, because no inventory was held. The implementation has no
 prepare, lock, book, cancel, favorites, or profile method.
-`OpenTableBookingAdapter` remains a separate future interface for an explicit
-prepare/lock step and booking submission; Phase 2 does not instantiate or
-simulate it.
+`OpenTableBookingAdapter` is implemented separately from the read adapter. A
+read-only preview reference cannot lock: policy approval must first create a
+short-lived booking authorization. `PreparedBooking` now means an actual held
+slot, not a simulated checkout context.
 
 The existing provider-neutral policy model remains future-facing: a prepared
 booking would carry an opaque in-memory handle and a normalized preview, with
@@ -104,6 +230,16 @@ reservation kinds; known/unknown prepaid, cancellation, and no-show exposure;
 known/unknown currency; payment-method requirement; and required/not-required/
 unknown SCA. Experience and payment-method requirements require separate target
 authorization. All unknown safety-relevant values reject.
+
+Reservation kind is independent from dining area. Targets use `ANY`, `ALLOW`,
+or `PREFER` dining-area policy. `ANY` accepts arbitrary sanitized provider
+labels and selects by provider order. `ALLOW` accepts only configured categories
+or exact labels. `PREFER` uses an ordered category/label list and an explicit
+`any` or `none` fallback. The legacy `allowedSeatingTypes` target field maps to
+an `ALLOW` policy and is rejected if supplied together with the new policy.
+Candidate evaluation performs only read-only previews and advances past preview
+or policy failures; no authorization or write happens until an exact candidate
+is selected.
 
 Current observed OpenTable terms describe no-show and late-cancellation charges
 as alternative triggers (for example, “no-shows or cancellations … incur” one

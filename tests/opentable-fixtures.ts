@@ -24,6 +24,7 @@ export function makeAvailabilityObservation(
                     timeOffsetMinutes: -30,
                     type: "Standard",
                     attributes: ["default"],
+                    previewReference: "00000000-0000-4000-8000-000000000001",
                   },
                 ],
               },

@@ -1,5 +1,11 @@
-import type { BookingTarget } from "./booking-target.js";
+import { effectiveDiningAreaPolicy, type BookingTarget } from "./booking-target.js";
 import type { ReservationSlot } from "./reservation-slot.js";
+import {
+  isDiningAreaAllowed,
+  diningAreaPreferenceRank,
+  legacySeatingCategory,
+  type DiningAreaOption,
+} from "./dining-area.js";
 
 export const SlotRejectionReason = {
   RESTAURANT_MISMATCH: "RESTAURANT_MISMATCH",
@@ -7,6 +13,7 @@ export const SlotRejectionReason = {
   TIME_OUTSIDE_WINDOW: "TIME_OUTSIDE_WINDOW",
   PARTY_SIZE_MISMATCH: "PARTY_SIZE_MISMATCH",
   SEATING_NOT_ALLOWED: "SEATING_NOT_ALLOWED",
+  RESERVATION_KIND_NOT_ALLOWED: "RESERVATION_KIND_NOT_ALLOWED",
 } as const;
 
 export type SlotRejectionReason =
@@ -36,9 +43,14 @@ export function getSlotRejectionReasons(
   if (slot.partySize !== target.partySize) {
     reasons.push(SlotRejectionReason.PARTY_SIZE_MISMATCH);
   }
-  if (!target.allowedSeatingTypes.includes(slot.seatingType)) {
+  const diningArea = slot.diningArea ?? legacyDiningArea(slot);
+  if (!isDiningAreaAllowed(effectiveDiningAreaPolicy(target), diningArea)) {
     reasons.push(SlotRejectionReason.SEATING_NOT_ALLOWED);
   }
+  if (
+    slot.reservationKind.kind === "unknown" ||
+    (slot.reservationKind.kind === "experience" && !target.bookingPolicy.allowExperiences)
+  ) reasons.push(SlotRejectionReason.RESERVATION_KIND_NOT_ALLOWED);
 
   return reasons;
 }
@@ -59,6 +71,14 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+function legacyDiningArea(slot: ReservationSlot): DiningAreaOption {
+  return {
+    category: legacySeatingCategory(slot.seatingType),
+    label: slot.seatingType,
+    providerOrder: 0,
+  };
+}
+
 /**
  * Ranks acceptable slots by preferred-time distance. Ties resolve by earliest
  * date, earliest time, target seating preference, and finally stable slot ID.
@@ -69,8 +89,10 @@ export function rankAcceptableSlots(
 ): readonly ReservationSlot[] {
   const preferredMinutes = minutesSinceMidnight(target.timeWindow.preferred);
 
-  return slots
-    .filter((slot) => isSlotAcceptable(target, slot))
+  const eligible = slots.filter((slot) => isSlotAcceptable(target, slot));
+  const diningAreaPolicy = effectiveDiningAreaPolicy(target);
+
+  return eligible
     .toSorted((left, right) => {
       const leftDistance = Math.abs(
         minutesSinceMidnight(left.localTime) - preferredMinutes,
@@ -83,8 +105,16 @@ export function rankAcceptableSlots(
         leftDistance - rightDistance ||
         compareText(left.localDate, right.localDate) ||
         compareText(left.localTime, right.localTime) ||
-        target.allowedSeatingTypes.indexOf(left.seatingType) -
-          target.allowedSeatingTypes.indexOf(right.seatingType) ||
+        diningAreaPreferenceRank(
+          diningAreaPolicy,
+          left.diningArea ?? legacyDiningArea(left),
+        ) -
+          diningAreaPreferenceRank(
+            diningAreaPolicy,
+            right.diningArea ?? legacyDiningArea(right),
+          ) ||
+        (left.diningArea?.providerOrder ?? 0) -
+          (right.diningArea?.providerOrder ?? 0) ||
         compareText(left.id, right.id)
       );
     });

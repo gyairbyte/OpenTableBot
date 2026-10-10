@@ -1,15 +1,37 @@
+import { z } from "zod";
+
 export const TargetState = {
   DRAFT: "DRAFT",
   ARMED: "ARMED",
   WAITING: "WAITING",
   MATCH_FOUND: "MATCH_FOUND",
   VALIDATING: "VALIDATING",
+  LOCKING: "LOCKING",
+  LOCKED: "LOCKED",
+  REVALIDATING: "REVALIDATING",
+  /** Legacy coarse Phase 0 state retained for stored-state compatibility. */
   BOOKING: "BOOKING",
+  SUBMITTING: "SUBMITTING",
   BOOKED: "BOOKED",
+  SLOT_LOST: "SLOT_LOST",
+  OUTCOME_UNKNOWN: "OUTCOME_UNKNOWN",
   PAUSED: "PAUSED",
 } as const;
 
 export type TargetState = (typeof TargetState)[keyof typeof TargetState];
+
+export const TargetStateSchema = z.enum(
+  Object.values(TargetState) as [TargetState, ...TargetState[]],
+);
+
+/**
+ * States from which the scheduler may begin a fresh run. Mid-flight states are
+ * excluded so a restart cannot silently duplicate an in-progress booking.
+ */
+export const RUNNABLE_TARGET_STATES: readonly TargetState[] = [
+  TargetState.ARMED,
+  TargetState.WAITING,
+];
 
 export const allowedTargetTransitions: Readonly<
   Record<TargetState, readonly TargetState[]>
@@ -18,9 +40,15 @@ export const allowedTargetTransitions: Readonly<
   ARMED: [TargetState.WAITING, TargetState.PAUSED],
   WAITING: [TargetState.MATCH_FOUND, TargetState.PAUSED],
   MATCH_FOUND: [TargetState.VALIDATING, TargetState.WAITING, TargetState.PAUSED],
-  VALIDATING: [TargetState.BOOKING, TargetState.WAITING, TargetState.PAUSED],
+  VALIDATING: [TargetState.LOCKING, TargetState.BOOKING, TargetState.WAITING, TargetState.PAUSED],
+  LOCKING: [TargetState.LOCKED, TargetState.SLOT_LOST, TargetState.PAUSED],
+  LOCKED: [TargetState.REVALIDATING, TargetState.PAUSED],
+  REVALIDATING: [TargetState.SUBMITTING, TargetState.SLOT_LOST, TargetState.PAUSED],
   BOOKING: [TargetState.BOOKED, TargetState.WAITING, TargetState.PAUSED],
+  SUBMITTING: [TargetState.BOOKED, TargetState.OUTCOME_UNKNOWN, TargetState.PAUSED],
   BOOKED: [],
+  SLOT_LOST: [TargetState.WAITING, TargetState.PAUSED],
+  OUTCOME_UNKNOWN: [TargetState.PAUSED],
   PAUSED: [TargetState.ARMED],
 };
 
