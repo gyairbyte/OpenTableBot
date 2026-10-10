@@ -12,6 +12,8 @@ describe("parseScheduleCliOptions", () => {
     expect(options.warmUpLeadMs).toBe(DEFAULT_WARM_UP_SECONDS * 1_000);
     // The readiness budget must be a real duration, not a raw second count.
     expect(options.readinessMs).toBe(DEFAULT_WARM_UP_SECONDS * 1_000);
+    expect(options.availabilityAttempts).toBe(1);
+    expect(options.availabilityRetryDelayMs).toBe(250);
     expect(options.execute).toBe(true);
     expect(options.targetId).toBeUndefined();
   });
@@ -40,6 +42,10 @@ describe("parseScheduleCliOptions", () => {
       "120",
       "--readiness-seconds",
       "120",
+      "--availability-attempts",
+      "3",
+      "--availability-retry-delay-ms",
+      "250",
     ]);
     expect(options.targetId).toBe("don-angie");
     expect(options.execute).toBe(true);
@@ -47,6 +53,8 @@ describe("parseScheduleCliOptions", () => {
     expect(options.maxRuntimeMs).toBe(5 * 60_000);
     expect(options.warmUpLeadMs).toBe(120_000);
     expect(options.readinessMs).toBe(120_000);
+    expect(options.availabilityAttempts).toBe(3);
+    expect(options.availabilityRetryDelayMs).toBe(250);
   });
 
   it("supports an explicit dry-run opt-out", () => {
@@ -60,6 +68,12 @@ describe("parseScheduleCliOptions", () => {
     );
     expect(() => parseScheduleCliOptions(["--warm-up-seconds", "-5"])).toThrow(
       /--warm-up-seconds must be a positive number/u,
+    );
+  });
+
+  it("rejects a non-integer availability attempt count", () => {
+    expect(() => parseScheduleCliOptions(["--availability-attempts", "2.5"])).toThrow(
+      /--availability-attempts must be a positive integer/u,
     );
   });
 

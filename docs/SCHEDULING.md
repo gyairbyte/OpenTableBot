@@ -101,11 +101,17 @@ Options:
   warm-up (default 180).
 - `--readiness-seconds <n>` how long to wait for the extension and an eligible
   page before proceeding (default equals the warm-up).
+- `--availability-attempts <n>` availability lookups to make when the exact
+  preferred time is absent (default 1).
+- `--availability-retry-delay-ms <n>` delay between those lookups in
+  milliseconds (default 250).
 
 The scheduler warms up before `knownReservationReleaseAt`, polling readiness
 until the extension and an eligible page are both available, then waits for the
-release time and runs once. If readiness never arrives, the target is paused with
-the readiness detail rather than run.
+release time and runs once. If the exact preferred time is absent, it can make
+the configured bounded number of additional availability lookups. It never
+substitutes a nearby time. If readiness never arrives or all availability
+attempts miss, the target is paused with the failure detail rather than run.
 
 ## Operator console
 

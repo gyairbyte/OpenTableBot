@@ -24,6 +24,12 @@ export interface ControlledBookingEngineOptions {
    * and test use.
    */
   readonly execute: boolean | (() => boolean);
+  /**
+   * Availability is read repeatedly only when the exact preferred time is
+   * absent. The default preserves the original single-shot behavior.
+   */
+  readonly availabilityAttempts?: number;
+  readonly availabilityRetryDelayMs?: number;
 }
 
 const STAGE_STATES: Readonly<Record<ControlledBookingStage, TargetState>> = {
@@ -89,21 +95,27 @@ export class ControlledBookingEngine implements BookingEngine {
 
     await move(TargetState.WAITING);
 
-    let slots: readonly ReservationSlot[];
-    try {
-      slots = await adapter.findSlots(target);
-    } catch (error) {
-      await pause(describeFailure(error));
-      return;
+    const availabilityAttempts = this.options.availabilityAttempts ?? 1;
+    const availabilityRetryDelayMs = this.options.availabilityRetryDelayMs ?? 250;
+    let slots: readonly ReservationSlot[] = [];
+    let preferred: readonly ReservationSlot[] = [];
+    for (let attempt = 1; attempt <= availabilityAttempts; attempt += 1) {
+      try {
+        slots = await adapter.findSlots(target);
+      } catch (error) {
+        await pause(describeFailure(error));
+        return;
+      }
+      preferred = slots.filter(
+        (slot) => slot.localTime === target.timeWindow.preferred,
+      );
+      if (preferred.length > 0 || attempt === availabilityAttempts) break;
+      await new Promise((resolve) => setTimeout(resolve, availabilityRetryDelayMs));
     }
-
-    const preferred = slots.filter(
-      (slot) => slot.localTime === target.timeWindow.preferred,
-    );
     const plan = createBookingPlan(target, preferred);
     if (plan.kind === "no-match") {
       await pause(
-        `No slot at the preferred time ${target.timeWindow.preferred}; ${slots.length} slot(s) were returned`,
+        `No slot at the preferred time ${target.timeWindow.preferred} after ${availabilityAttempts} availability attempt(s); ${slots.length} slot(s) were returned`,
       );
       return;
     }

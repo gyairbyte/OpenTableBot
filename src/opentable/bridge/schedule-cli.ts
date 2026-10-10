@@ -37,7 +37,16 @@ async function pendingTargets(
 
 async function main(): Promise<void> {
   const options = parseScheduleCliOptions(process.argv.slice(2));
-  const { targetId, execute, tickMs, maxRuntimeMs, warmUpLeadMs, readinessMs } = options;
+  const {
+    targetId,
+    execute,
+    tickMs,
+    maxRuntimeMs,
+    warmUpLeadMs,
+    readinessMs,
+    availabilityAttempts,
+    availabilityRetryDelayMs,
+  } = options;
 
   const credential = await loadCredential();
   const client = new OpenTableBridgeClient({ credential, port: options.bridgePort });
@@ -48,7 +57,11 @@ async function main(): Promise<void> {
   const notifier = new LocalNotifier();
   const engine = new ControlledBookingEngine(
     { adapter, store, notifier },
-    { execute },
+    {
+      execute,
+      availabilityAttempts,
+      availabilityRetryDelayMs,
+    },
   );
 
   // One unattended scheduler per state directory. A second process would race

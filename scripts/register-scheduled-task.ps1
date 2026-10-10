@@ -16,7 +16,7 @@
   .\register-scheduled-task.ps1 -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" -DropTime "10:00" -DropDate "2026-11-08" -TargetId don-angie
 
 .EXAMPLE
-  .\register-scheduled-task.ps1 -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" -DropTime "10:00" -TargetId don-angie -DryRun
+  .\register-scheduled-task.ps1 -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" -DropTime "10:00" -TargetId don-angie -AvailabilityAttempts 3 -AvailabilityRetryDelayMs 250 -DryRun
 
 .EXAMPLE
   # Recurring daily warm-up at 09:57 for a 10:00 drop
@@ -30,7 +30,9 @@ param(
   [switch]$Execute,
   [switch]$DryRun,
   [string]$TaskName = "OpenTableBot-Drop",
-  [int]$WarmUpSeconds = 180
+  [int]$WarmUpSeconds = 180,
+  [int]$AvailabilityAttempts = 1,
+  [int]$AvailabilityRetryDelayMs = 250
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,6 +61,10 @@ $argumentList = @(
 if ($TargetId -ne "") { $argumentList += @("-TargetId", "`"$TargetId`"") }
 $argumentList += @("-WarmUpSeconds", "$WarmUpSeconds")
 $argumentList += @("-ReadinessSeconds", "$WarmUpSeconds")
+$argumentList += @(
+  "-AvailabilityAttempts", "$AvailabilityAttempts",
+  "-AvailabilityRetryDelayMs", "$AvailabilityRetryDelayMs"
+)
 if ($liveMode) { $argumentList += "-Execute" } else { $argumentList += "-DryRun" }
 
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument ($argumentList -join " ")

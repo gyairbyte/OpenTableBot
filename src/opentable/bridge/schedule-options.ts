@@ -7,6 +7,8 @@ export interface ScheduleCliOptions {
   readonly maxRuntimeMs: number;
   readonly warmUpLeadMs: number;
   readonly readinessMs: number;
+  readonly availabilityAttempts: number;
+  readonly availabilityRetryDelayMs: number;
   readonly bridgePort: number;
 }
 
@@ -57,6 +59,18 @@ function positiveNumber(
   return value;
 }
 
+function positiveInteger(
+  flags: ReadonlyMap<string, string>,
+  name: string,
+  fallback: number,
+): number {
+  const value = positiveNumber(flags, name, fallback);
+  if (!Number.isInteger(value)) {
+    throw new Error(`--${name} must be a positive integer`);
+  }
+  return value;
+}
+
 export function configuredBridgePort(): number {
   const value = process.env.OPENTABLE_BRIDGE_PORT;
   if (value === undefined) return DEFAULT_BRIDGE_PORT;
@@ -83,6 +97,12 @@ export function parseScheduleCliOptions(args: readonly string[]): ScheduleCliOpt
       positiveNumber(flags, "max-runtime-minutes", DEFAULT_MAX_RUNTIME_MINUTES) * 60_000,
     warmUpLeadMs: warmUpSeconds * 1_000,
     readinessMs: positiveNumber(flags, "readiness-seconds", warmUpSeconds) * 1_000,
+    availabilityAttempts: positiveInteger(flags, "availability-attempts", 1),
+    availabilityRetryDelayMs: positiveNumber(
+      flags,
+      "availability-retry-delay-ms",
+      250,
+    ),
     bridgePort: configuredBridgePort(),
   };
 }

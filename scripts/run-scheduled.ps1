@@ -16,7 +16,7 @@
   .\run-scheduled.ps1 -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" -TargetId don-angie
 
 .EXAMPLE
-  .\run-scheduled.ps1 -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" -TargetId don-angie -DryRun
+  .\run-scheduled.ps1 -RestaurantUrl "https://www.opentable.com/r/don-angie-new-york" -TargetId don-angie -AvailabilityAttempts 3 -AvailabilityRetryDelayMs 250 -DryRun
 #>
 param(
   [Parameter(Mandatory = $true)][string]$RestaurantUrl,
@@ -26,7 +26,9 @@ param(
   [int]$BridgePort = 38471,
   [int]$MaxRuntimeMinutes = 30,
   [int]$WarmUpSeconds = 180,
-  [int]$ReadinessSeconds = 180
+  [int]$ReadinessSeconds = 180,
+  [int]$AvailabilityAttempts = 1,
+  [int]$AvailabilityRetryDelayMs = 250
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,7 +74,9 @@ $schedulerArgs = @(
   "run", "opentable:schedule", "--",
   "--max-runtime-minutes", "$MaxRuntimeMinutes",
   "--warm-up-seconds", "$WarmUpSeconds",
-  "--readiness-seconds", "$ReadinessSeconds"
+  "--readiness-seconds", "$ReadinessSeconds",
+  "--availability-attempts", "$AvailabilityAttempts",
+  "--availability-retry-delay-ms", "$AvailabilityRetryDelayMs"
 )
 if ($TargetId -ne "") { $schedulerArgs += @("--target-id", $TargetId) }
 if ($liveMode) { $schedulerArgs += "--execute" } else { $schedulerArgs += "--dry-run" }

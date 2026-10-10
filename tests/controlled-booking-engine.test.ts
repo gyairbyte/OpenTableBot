@@ -130,6 +130,52 @@ describe("ControlledBookingEngine", () => {
     expect(adapter.authorizeBooking).not.toHaveBeenCalled();
   });
 
+  it("retries availability until the exact preferred time appears", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seed(store);
+    const adapter = bookingAdapter({
+      findSlots: vi.fn()
+        .mockResolvedValueOnce([makeSlot({ localTime: "18:30" })])
+        .mockResolvedValueOnce([makeSlot()]),
+    });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      {
+        execute: true,
+        availabilityAttempts: 2,
+        availabilityRetryDelayMs: 1,
+      },
+    );
+
+    await engine.runOnce("target-1");
+
+    expect((await store.get("target-1"))?.state).toBe("BOOKED");
+    expect(adapter.findSlots).toHaveBeenCalledTimes(2);
+  });
+
+  it("pauses after exhausting availability retries", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seed(store);
+    const adapter = bookingAdapter({
+      findSlots: vi.fn().mockResolvedValue([makeSlot({ localTime: "18:30" })]),
+    });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      {
+        execute: true,
+        availabilityAttempts: 3,
+        availabilityRetryDelayMs: 1,
+      },
+    );
+
+    await engine.runOnce("target-1");
+
+    const record = await store.get("target-1");
+    expect(record?.state).toBe("PAUSED");
+    expect(record?.pauseReason).toContain("after 3 availability attempt(s)");
+    expect(adapter.findSlots).toHaveBeenCalledTimes(3);
+  });
+
   it("pauses after a dry run without locking or submitting", async () => {
     const store = new FileTargetStore({ directory: await tempDirectory() });
     await seed(store);
