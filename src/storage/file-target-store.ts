@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { AvailabilityRunDetailSchema } from "../domain/availability-detail.js";
 import { BookingTargetSchema } from "../domain/booking-target.js";
 import { BookingConfirmationSchema } from "../domain/reservation-slot.js";
 import {
@@ -18,6 +19,7 @@ const storedRecordSchema = z.strictObject({
   target: BookingTargetSchema,
   pauseReason: z.string().min(1).optional(),
   confirmation: BookingConfirmationSchema.optional(),
+  availabilityDetail: AvailabilityRunDetailSchema.optional(),
 });
 
 const storedFileSchema = z.strictObject({
@@ -60,6 +62,9 @@ function toTargetRecord(record: StoredRecord): TargetRecord {
     ...(record.confirmation === undefined
       ? {}
       : { confirmation: record.confirmation }),
+    ...(record.availabilityDetail === undefined
+      ? {}
+      : { availabilityDetail: record.availabilityDetail }),
   };
 }
 

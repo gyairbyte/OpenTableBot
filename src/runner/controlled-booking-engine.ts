@@ -1,3 +1,8 @@
+import type {
+  AvailabilityAttempt,
+  AvailabilityRunDetail,
+} from "../domain/availability-detail.js";
+import type { BookingTarget } from "../domain/booking-target.js";
 import type { ReservationSlot } from "../domain/reservation-slot.js";
 import {
   RUNNABLE_TARGET_STATES,
@@ -30,6 +35,8 @@ export interface ControlledBookingEngineOptions {
    */
   readonly availabilityAttempts?: number;
   readonly availabilityRetryDelayMs?: number;
+  /** Injectable clock for deterministic run-detail timestamps. */
+  readonly now?: () => number;
 }
 
 const STAGE_STATES: Readonly<Record<ControlledBookingStage, TargetState>> = {
@@ -44,6 +51,31 @@ function describeFailure(error: unknown): string {
     return `${error.category}: ${error.message}`;
   }
   return error instanceof Error ? error.message : "Unknown booking failure";
+}
+
+/**
+ * Human-readable no-match summary. The stored availability detail carries the
+ * full evidence; this reason makes the single most useful distinction visible
+ * without clicking: nothing was open at all versus open times existed but
+ * every one of them fell outside the configured window.
+ */
+function describeNoMatch(
+  target: BookingTarget,
+  attempts: readonly AvailabilityAttempt[],
+  attemptCount: number,
+): string {
+  const base = `No slot at the preferred time ${target.timeWindow.preferred} after ${attemptCount} availability attempt(s); ${attempts[attempts.length - 1]?.acceptableSlots ?? 0} slot(s) were returned`;
+  const lastObserved = attempts[attempts.length - 1]?.observedSlots ?? [];
+  if (lastObserved.length === 0) {
+    return `${base}, and no open times were observed at all`;
+  }
+  const outsideWindow = lastObserved.filter((slot) => !slot.withinWindow);
+  const insideWindow = lastObserved.length - outsideWindow.length;
+  const window = `${target.timeWindow.earliest}-${target.timeWindow.latest}`;
+  if (outsideWindow.length > 0 && insideWindow === 0) {
+    return `${base}, ${outsideWindow.length} open time(s) were all outside the ${window} window`;
+  }
+  return `${base}, ${lastObserved.length} open time(s) were observed (${outsideWindow.length} outside the ${window} window)`;
 }
 
 /**
@@ -84,26 +116,45 @@ export class ControlledBookingEngine implements BookingEngine {
       await notifier.notify({ type: "state-changed", targetId, from, to });
     };
 
-    const pause = async (reason: string): Promise<void> => {
+    const pause = async (
+      reason: string,
+      availabilityDetail?: AvailabilityRunDetail,
+    ): Promise<void> => {
       if (!canTransitionTarget(current.state, TargetState.PAUSED)) return;
       current = await store.save(
-        { ...current, state: TargetState.PAUSED, pauseReason: reason },
+        {
+          ...current,
+          state: TargetState.PAUSED,
+          pauseReason: reason,
+          ...(availabilityDetail === undefined
+            ? {}
+            : { availabilityDetail }),
+        },
         current.version,
       );
       await notifier.notify({ type: "target-paused", targetId, reason });
     };
 
+    // Moving into WAITING also clears any availability detail left over from
+    // a previous run, so the console can never mistake an old capture for
+    // this run's evidence. A target that is already waiting skips the
+    // redundant self-transition.
     if (current.state !== TargetState.WAITING) {
-      await move(TargetState.WAITING);
+      await move(TargetState.WAITING, { availabilityDetail: undefined });
     }
 
     const availabilityAttempts = this.options.availabilityAttempts ?? 1;
     const availabilityRetryDelayMs = this.options.availabilityRetryDelayMs ?? 250;
+    const now = this.options.now ?? (() => Date.now());
     let slots: readonly ReservationSlot[] = [];
     let preferred: readonly ReservationSlot[] = [];
+    const attempts: AvailabilityAttempt[] = [];
     for (let attempt = 1; attempt <= availabilityAttempts; attempt += 1) {
+      const startedAtMs = now();
+      let observed;
       try {
-        slots = await adapter.findSlots(target);
+        observed = await adapter.findSlotsDetailed(target);
+        slots = observed.acceptableSlots;
       } catch (error) {
         await pause(describeFailure(error));
         return;
@@ -111,18 +162,31 @@ export class ControlledBookingEngine implements BookingEngine {
       preferred = slots.filter(
         (slot) => slot.localTime === target.timeWindow.preferred,
       );
+      attempts.push({
+        startedAt: new Date(startedAtMs).toISOString(),
+        durationMs: Math.max(0, now() - startedAtMs),
+        acceptableSlots: slots.length,
+        preferredSlots: preferred.length,
+        observedSlots: observed.observedSlots,
+      });
       if (preferred.length > 0 || attempt === availabilityAttempts) break;
       await new Promise((resolve) => setTimeout(resolve, availabilityRetryDelayMs));
     }
+    const availabilityDetail: AvailabilityRunDetail = {
+      preferredTime: target.timeWindow.preferred,
+      earliest: target.timeWindow.earliest,
+      latest: target.timeWindow.latest,
+      matched: preferred.length > 0,
+      capturedAt: new Date(now()).toISOString(),
+      attempts,
+    };
     const plan = createBookingPlan(target, preferred);
     if (plan.kind === "no-match") {
-      await pause(
-        `No slot at the preferred time ${target.timeWindow.preferred} after ${availabilityAttempts} availability attempt(s); ${slots.length} slot(s) were returned`,
-      );
+      await pause(describeNoMatch(target, attempts, availabilityAttempts), availabilityDetail);
       return;
     }
 
-    await move(TargetState.MATCH_FOUND);
+    await move(TargetState.MATCH_FOUND, { availabilityDetail });
     await move(TargetState.VALIDATING);
 
     try {

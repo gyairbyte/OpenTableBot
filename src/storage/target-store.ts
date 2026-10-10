@@ -1,3 +1,4 @@
+import type { AvailabilityRunDetail } from "../domain/availability-detail.js";
 import type { BookingTarget } from "../domain/booking-target.js";
 import type { BookingConfirmation } from "../domain/reservation-slot.js";
 import type { TargetState } from "../domain/target-state.js";
@@ -10,6 +11,13 @@ export interface TargetRecord {
   readonly updatedAt: string;
   readonly pauseReason?: string;
   readonly confirmation?: BookingConfirmation;
+  /**
+   * Availability evidence from the most recent engine run that reached an
+   * availability lookup, kept so the console can explain a pause with every
+   * open time the run saw. Cleared at the start of each run (the explicit
+   * undefined is how the engine removes the key on its first save).
+   */
+  readonly availabilityDetail?: AvailabilityRunDetail | undefined;
 }
 
 export interface TargetStore {

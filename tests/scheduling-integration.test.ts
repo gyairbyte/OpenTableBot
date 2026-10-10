@@ -2,6 +2,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import type { DetailedAvailability } from "../src/domain/availability-detail.js";
 import type {
   AuthenticationStatus,
   BookingSubmissionResult,
@@ -55,6 +56,9 @@ function fakeAdapter(
     findSlots: vi
       .fn<(target: BookingTarget) => Promise<readonly ReservationSlot[]>>()
       .mockResolvedValue([makeSlot()]),
+    findSlotsDetailed: vi
+      .fn<(target: BookingTarget) => Promise<DetailedAvailability>>()
+      .mockResolvedValue({ acceptableSlots: [makeSlot()], observedSlots: [] }),
     getBookingPreview: vi
       .fn<(target: BookingTarget, slot: ReservationSlot) => Promise<BookingPreview>>()
       .mockResolvedValue(preview),
@@ -144,7 +148,10 @@ describe("known-drop scheduling end to end", () => {
 
   it("pauses without booking when the exact preferred time is absent", async () => {
     const adapter = fakeAdapter({
-      findSlots: vi.fn().mockResolvedValue([makeSlot({ localTime: "18:30" })]),
+      findSlotsDetailed: vi.fn().mockResolvedValue({
+        acceptableSlots: [makeSlot({ localTime: "18:30" })],
+        observedSlots: [],
+      }),
     });
     const { store, scheduler } = await harness(adapter);
 
@@ -153,6 +160,7 @@ describe("known-drop scheduling end to end", () => {
     const record = await store.get("don-angie");
     expect(record?.state).toBe("PAUSED");
     expect(record?.pauseReason).toContain("preferred");
+    expect(record?.availabilityDetail?.matched).toBe(false);
     expect(adapter.book).not.toHaveBeenCalled();
   });
 
@@ -163,7 +171,7 @@ describe("known-drop scheduling end to end", () => {
     );
     const adapter = fakeAdapter({
       checkAuthentication: vi.fn().mockRejectedValue(challenge),
-      findSlots: vi.fn().mockRejectedValue(challenge),
+      findSlotsDetailed: vi.fn().mockRejectedValue(challenge),
     });
     const { store, scheduler } = await harness(adapter);
 

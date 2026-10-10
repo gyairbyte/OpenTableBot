@@ -3,6 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type {
+  DetailedAvailability,
+  ObservedAvailabilitySlot,
+} from "../src/domain/availability-detail.js";
+import type {
   AuthenticationStatus,
   BookingSubmissionResult,
   OpenTableBookingAdapter,
@@ -22,6 +26,28 @@ import { makePreview, makeSlot, makeTarget } from "./fixtures.js";
 
 async function tempDirectory(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), "otb-engine-"));
+}
+
+function observed(
+  overrides: Partial<ObservedAvailabilitySlot> = {},
+): ObservedAvailabilitySlot {
+  return {
+    localDate: "2026-09-01",
+    localTime: "19:00",
+    seatingType: "standard",
+    reservationKind: "standard",
+    withinWindow: true,
+    rejectionReasons: [],
+    diningAreas: ["Dining Room"],
+    ...overrides,
+  };
+}
+
+function detailed(
+  acceptableSlots: readonly ReservationSlot[],
+  observedSlots: readonly ObservedAvailabilitySlot[] = [],
+): DetailedAvailability {
+  return { acceptableSlots, observedSlots };
 }
 
 function bookingAdapter(
@@ -52,6 +78,9 @@ function bookingAdapter(
     findSlots: vi
       .fn<(target: BookingTarget) => Promise<readonly ReservationSlot[]>>()
       .mockResolvedValue([makeSlot()]),
+    findSlotsDetailed: vi
+      .fn<(target: BookingTarget) => Promise<DetailedAvailability>>()
+      .mockResolvedValue(detailed([makeSlot()])),
     getBookingPreview: vi
       .fn<
         (target: BookingTarget, slot: ReservationSlot) => Promise<BookingPreview>
@@ -129,7 +158,14 @@ describe("ControlledBookingEngine", () => {
     const store = new FileTargetStore({ directory: await tempDirectory() });
     await seed(store);
     const adapter = bookingAdapter({
-      findSlots: vi.fn().mockResolvedValue([makeSlot({ localTime: "18:30" })]),
+      findSlotsDetailed: vi
+        .fn<(target: BookingTarget) => Promise<DetailedAvailability>>()
+        .mockResolvedValue(
+          detailed(
+            [makeSlot({ localTime: "18:30" })],
+            [observed({ localTime: "18:30" })],
+          ),
+        ),
     });
     const engine = new ControlledBookingEngine(
       { adapter, store, notifier: recordingNotifier([]) },
@@ -144,13 +180,155 @@ describe("ControlledBookingEngine", () => {
     expect(adapter.authorizeBooking).not.toHaveBeenCalled();
   });
 
+  it("records every observed time, including out-of-window, in the pause detail", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seed(store);
+    const adapter = bookingAdapter({
+      findSlotsDetailed: vi
+        .fn<(target: BookingTarget) => Promise<DetailedAvailability>>()
+        .mockResolvedValue(
+          detailed([], [
+            observed({
+              localTime: "20:30",
+              withinWindow: false,
+              diningAreas: [],
+            }),
+            observed({
+              localTime: "20:45",
+              withinWindow: false,
+              rejectionReasons: ["TIME_OUTSIDE_WINDOW"],
+              diningAreas: [],
+            }),
+          ]),
+        ),
+    });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      {
+        execute: true,
+        now: () => Date.parse("2026-10-10T14:00:00.000Z"),
+      },
+    );
+
+    await engine.runOnce("target-1");
+
+    const record = await store.get("target-1");
+    expect(record?.state).toBe("PAUSED");
+    expect(record?.pauseReason).toContain("preferred");
+    expect(record?.pauseReason).toContain(
+      "2 open time(s) were all outside the 18:00-20:00 window",
+    );
+    const detail = record?.availabilityDetail;
+    expect(detail?.matched).toBe(false);
+    expect(detail?.preferredTime).toBe("19:00");
+    expect(detail?.earliest).toBe("18:00");
+    expect(detail?.latest).toBe("20:00");
+    expect(detail?.capturedAt).toBe("2026-10-10T14:00:00.000Z");
+    expect(detail?.attempts).toHaveLength(1);
+    const attempt = detail?.attempts[0];
+    expect(attempt?.acceptableSlots).toBe(0);
+    expect(attempt?.preferredSlots).toBe(0);
+    expect(attempt?.durationMs).toBe(0);
+    expect(attempt?.startedAt).toBe("2026-10-10T14:00:00.000Z");
+    expect(attempt?.observedSlots).toHaveLength(2);
+    expect(attempt?.observedSlots[0]?.withinWindow).toBe(false);
+    expect(attempt?.observedSlots[1]?.withinWindow).toBe(false);
+    expect(attempt?.observedSlots[1]?.rejectionReasons).toEqual([
+      "TIME_OUTSIDE_WINDOW",
+    ]);
+  });
+
+  it("distinguishes a run that observed no open times at all", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seed(store);
+    const adapter = bookingAdapter({
+      findSlotsDetailed: vi
+        .fn<(target: BookingTarget) => Promise<DetailedAvailability>>()
+        .mockResolvedValue(detailed([])),
+    });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: true },
+    );
+
+    await engine.runOnce("target-1");
+
+    const record = await store.get("target-1");
+    expect(record?.state).toBe("PAUSED");
+    expect(record?.pauseReason).toContain("no open times were observed at all");
+    expect(record?.availabilityDetail?.attempts[0]?.observedSlots).toEqual([]);
+  });
+
+  it("keeps the detail of a successful run alongside the confirmation", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seed(store);
+    const adapter = bookingAdapter({
+      findSlotsDetailed: vi
+        .fn<(target: BookingTarget) => Promise<DetailedAvailability>>()
+        .mockResolvedValue(
+          detailed([makeSlot()], [observed({ localTime: "19:00" })]),
+        ),
+    });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: true },
+    );
+
+    await engine.runOnce("target-1");
+
+    const record = await store.get("target-1");
+    expect(record?.state).toBe("BOOKED");
+    expect(record?.availabilityDetail?.matched).toBe(true);
+    expect(record?.availabilityDetail?.attempts[0]?.preferredSlots).toBe(1);
+  });
+
+  it("clears a stale detail from an earlier run when a new run starts", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    const stale = {
+      preferredTime: "19:00",
+      earliest: "18:00",
+      latest: "20:00",
+      matched: false,
+      capturedAt: "2026-10-01T00:00:00.000Z",
+      attempts: [
+        {
+          startedAt: "2026-10-01T00:00:00.000Z",
+          durationMs: 10,
+          acceptableSlots: 0,
+          preferredSlots: 0,
+          observedSlots: [observed({ localTime: "18:30" })],
+        },
+      ],
+    };
+    await seed(store, { availabilityDetail: stale });
+    const challenge = new (await import("../src/opentable/errors.js"))
+      .OpenTableAdapterError("AUTHENTICATION_REQUIRED", "sign-in required");
+    const adapter = bookingAdapter({
+      findSlotsDetailed: vi.fn().mockRejectedValue(challenge),
+    });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: true },
+    );
+
+    await engine.runOnce("target-1");
+
+    const record = await store.get("target-1");
+    expect(record?.state).toBe("PAUSED");
+    expect(record?.pauseReason).toContain("AUTHENTICATION_REQUIRED");
+    expect(record?.availabilityDetail).toBeUndefined();
+  });
+
   it("retries availability until the exact preferred time appears", async () => {
     const store = new FileTargetStore({ directory: await tempDirectory() });
     await seed(store);
     const adapter = bookingAdapter({
-      findSlots: vi.fn()
-        .mockResolvedValueOnce([makeSlot({ localTime: "18:30" })])
-        .mockResolvedValueOnce([makeSlot()]),
+      findSlotsDetailed: vi
+        .fn<(target: BookingTarget) => Promise<DetailedAvailability>>()
+        .mockResolvedValueOnce(detailed([makeSlot({ localTime: "18:30" })], [
+          observed({ localTime: "18:30" }),
+        ]))
+        .mockResolvedValueOnce(detailed([makeSlot()], [observed()])),
     });
     const engine = new ControlledBookingEngine(
       { adapter, store, notifier: recordingNotifier([]) },
@@ -164,14 +342,23 @@ describe("ControlledBookingEngine", () => {
     await engine.runOnce("target-1");
 
     expect((await store.get("target-1"))?.state).toBe("BOOKED");
-    expect(adapter.findSlots).toHaveBeenCalledTimes(2);
+    expect(adapter.findSlotsDetailed).toHaveBeenCalledTimes(2);
+    expect(
+      (await store.get("target-1"))?.availabilityDetail?.attempts,
+    ).toHaveLength(2);
   });
 
   it("pauses after exhausting availability retries", async () => {
     const store = new FileTargetStore({ directory: await tempDirectory() });
     await seed(store);
     const adapter = bookingAdapter({
-      findSlots: vi.fn().mockResolvedValue([makeSlot({ localTime: "18:30" })]),
+      findSlotsDetailed: vi
+        .fn<(target: BookingTarget) => Promise<DetailedAvailability>>()
+        .mockResolvedValue(
+          detailed([makeSlot({ localTime: "18:30" })], [
+            observed({ localTime: "18:30" }),
+          ]),
+        ),
     });
     const engine = new ControlledBookingEngine(
       { adapter, store, notifier: recordingNotifier([]) },
@@ -187,7 +374,8 @@ describe("ControlledBookingEngine", () => {
     const record = await store.get("target-1");
     expect(record?.state).toBe("PAUSED");
     expect(record?.pauseReason).toContain("after 3 availability attempt(s)");
-    expect(adapter.findSlots).toHaveBeenCalledTimes(3);
+    expect(record?.availabilityDetail?.attempts).toHaveLength(3);
+    expect(adapter.findSlotsDetailed).toHaveBeenCalledTimes(3);
   });
 
   it("pauses after a dry run without locking or submitting", async () => {
@@ -234,7 +422,7 @@ describe("ControlledBookingEngine", () => {
     const store = new FileTargetStore({ directory: await tempDirectory() });
     await seed(store);
     const adapter = bookingAdapter({
-      findSlots: vi.fn().mockRejectedValue(new Error("bridge unavailable")),
+      findSlotsDetailed: vi.fn().mockRejectedValue(new Error("bridge unavailable")),
     });
     const engine = new ControlledBookingEngine(
       { adapter, store, notifier: recordingNotifier([]) },

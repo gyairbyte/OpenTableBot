@@ -12,6 +12,13 @@ up before the release, waits for the drop, and makes exactly one attempt.
 - It runs **once**. There is no post-drop retry loop.
 - Ambiguous submissions become terminal `OUTCOME_UNKNOWN` and are never retried.
 - Any challenge, sign-out, access denial, or failure pauses the target and logs it.
+- Every run records a structured **availability detail** on the target: when
+  each availability attempt ran, how long it took, and every open time the page
+  returned, including times outside the configured earliest/latest window. A
+  no-match pause reason summarizes it, and the console task table expands the
+  full per-attempt evidence so "0 slot(s) were returned" can be distinguished
+  from "open times existed, but all outside my window". The detail is replaced
+  at the start of each new run and never influences slot selection.
 - Live booking is the default. Pass `--dry-run` to inspect timing, availability,
   and policy without locking or submitting.
 
@@ -265,6 +272,11 @@ means leaving the console open cannot block a scheduled drop.
 Every state change, pause, and confirmation is printed and appended as one JSON
 line to `.local/logs/notifications.log` (override with
 `OPENTABLE_BOT_LOG_DIRECTORY`). No network egress is involved.
+
+The pause reason in a notification stays a one-line summary. The full evidence
+for an availability decision lives in the target record's `availabilityDetail`
+field in the state file, and the console renders it under the task's status as
+an expandable "Availability detail" section with one row of chips per attempt.
 
 ## Status
 

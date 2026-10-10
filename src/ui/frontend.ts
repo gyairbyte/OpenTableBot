@@ -73,6 +73,15 @@ export const FRONTEND_HTML = String.raw`<!doctype html>
   .decision.allowed { color: #0f7b3f; }
   .decision.rejected { color: #b3261e; }
   ul.reasons { margin: 6px 0 0; padding-left: 18px; font-size: 13px; color: #b3261e; }
+  .availability-detail { margin-top: 6px; }
+  .availability-detail > summary { cursor: pointer; font-size: 12px; font-weight: 600; color: #1f5feb; }
+  .availability-detail[open] > summary { margin-bottom: 6px; }
+  .availability-detail .detail-overview { font-size: 12px; color: #4b5563; margin-bottom: 4px; }
+  .availability-detail .detail-attempt { font-size: 12px; font-weight: 600; color: #4b5563; margin-top: 8px; }
+  .availability-detail .chips { margin-bottom: 4px; }
+  .chip.in-window { background: #e7f5ec; border-color: #a9d9b8; color: #0f7b3f; }
+  .chip.out-window { background: #f1f3f6; color: #6b7280; }
+  .chip.none { background: #fff4e5; border-color: #f0c48a; color: #8a4b08; }
 </style>
 </head>
 <body>
@@ -483,7 +492,12 @@ function renderTargets(targets) {
     var detail = "";
     if (record.confirmation) detail = "confirmation " + record.confirmation.confirmationId + " at " + record.confirmation.startsAt;
     else if (record.pauseReason) detail = record.pauseReason;
-    row.appendChild(el("td", detail));
+    var detailCell = el("td");
+    if (detail) detailCell.appendChild(el("div", detail));
+    if (record.availabilityDetail) {
+      detailCell.appendChild(availabilityDetailWidget(record.availabilityDetail));
+    }
+    row.appendChild(detailCell);
     var actions = el("td", null, "actions");
     if (EDITABLE_STATES.indexOf(record.state) >= 0) {
       actions.appendChild(editButton(record));
@@ -1160,6 +1174,69 @@ function defaultTimes() {
   if (!form.earliest.value) form.earliest.value = "18:30";
   if (!form.latest.value) form.latest.value = "19:30";
   if (!form.preferred.value) form.preferred.value = "19:00";
+}
+
+function formatInstant(iso) {
+  var parsed = new Date(iso);
+  return isNaN(parsed.getTime()) ? String(iso) : parsed.toLocaleTimeString();
+}
+
+function sortObservations(slots) {
+  return slots.slice().sort(function (left, right) {
+    if (left.localDate !== right.localDate) return left.localDate < right.localDate ? -1 : 1;
+    if (left.localTime !== right.localTime) return left.localTime < right.localTime ? -1 : 1;
+    return 0;
+  });
+}
+
+function observedChip(slot, detail) {
+  var chip = el("span", null, "chip " + (slot.withinWindow ? "in-window" : "out-window"));
+  chip.textContent = slot.localDate + " " + slot.localTime;
+  var windowText = (slot.withinWindow ? "inside" : "outside") +
+    " the " + detail.earliest + "-" + detail.latest + " window";
+  var notes = [slot.seatingType, slot.reservationKind, windowText];
+  if (slot.diningAreas.length) notes.push("dining areas: " + slot.diningAreas.join(", "));
+  if (slot.rejectionReasons.length) notes.push(slot.rejectionReasons.join(", "));
+  chip.title = notes.join(" · ");
+  return chip;
+}
+
+/**
+ * Expander under a task row: every open time each availability attempt saw,
+ * including times outside the configured window, with when it ran, how long it
+ * took, and what the adapter returned.
+ */
+function availabilityDetailWidget(detail) {
+  var box = document.createElement("details");
+  box.className = "availability-detail";
+  var summary = el("summary");
+  summary.textContent = "Availability detail (" + detail.attempts.length +
+    (detail.attempts.length === 1 ? " attempt" : " attempts") +
+    ", captured " + formatInstant(detail.capturedAt) + ")";
+  box.appendChild(summary);
+  var overview = el("div", null, "detail-overview");
+  overview.textContent = "Preferred " + detail.preferredTime +
+    " · window " + detail.earliest + "-" + detail.latest +
+    (detail.matched ? " · the preferred time was found" : " · the preferred time was not found");
+  box.appendChild(overview);
+  detail.attempts.forEach(function (attempt, index) {
+    var head = el("div", null, "detail-attempt");
+    head.textContent = "Attempt " + (index + 1) + " at " + formatInstant(attempt.startedAt) +
+      " (" + (attempt.durationMs / 1000).toFixed(2) + "s): " +
+      attempt.acceptableSlots + " slot(s) returned, " +
+      attempt.observedSlots.length + " open time(s) observed, " +
+      attempt.preferredSlots + " at the preferred time";
+    box.appendChild(head);
+    var chips = el("div", null, "chips");
+    if (!attempt.observedSlots.length) {
+      chips.appendChild(el("span", "The availability lookup returned no open times at all.", "chip none"));
+    }
+    sortObservations(attempt.observedSlots).forEach(function (slot) {
+      chips.appendChild(observedChip(slot, detail));
+    });
+    box.appendChild(chips);
+  });
+  return box;
 }
 
 populateCategories();

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { DetailedAvailability } from "../src/domain/availability-detail.js";
 import type {
   AuthenticationStatus,
   BookingSubmissionResult,
@@ -32,6 +33,7 @@ function adapterFixture(overrides: Partial<OpenTableBookingAdapter> = {}) {
   const adapter: OpenTableBookingAdapter = {
     checkAuthentication: vi.fn<() => Promise<AuthenticationStatus>>().mockResolvedValue({ authenticated: true }),
     findSlots: vi.fn<(target: BookingTarget) => Promise<readonly ReservationSlot[]>>().mockResolvedValue([makeSlot()]),
+    findSlotsDetailed: vi.fn<(target: BookingTarget) => Promise<DetailedAvailability>>().mockResolvedValue({ acceptableSlots: [makeSlot()], observedSlots: [] }),
     getBookingPreview: vi.fn<(target: BookingTarget, slot: ReservationSlot) => Promise<BookingPreview>>().mockResolvedValue(preview),
     authorizeBooking: vi.fn().mockResolvedValue({
       authorizationHandle: "00000000-0000-4000-8000-000000000009",

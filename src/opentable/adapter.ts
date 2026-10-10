@@ -1,3 +1,4 @@
+import type { DetailedAvailability } from "../domain/availability-detail.js";
 import type { BookingTarget } from "../domain/booking-target.js";
 import type {
   BookingConfirmation,
@@ -49,6 +50,14 @@ export interface OpenTableReadAdapter {
   start?(): Promise<void>;
   checkAuthentication(): Promise<AuthenticationStatus>;
   findSlots(target: BookingTarget): Promise<readonly ReservationSlot[]>;
+  /**
+   * The same lookup as findSlots, plus every open time the page offered even
+   * when the target rejects it (for example times outside the configured
+   * window). Used for diagnostic run detail; never for slot selection.
+   */
+  findSlotsDetailed(
+    target: BookingTarget,
+  ): Promise<DetailedAvailability>;
   /** Read booking terms without preparing, holding, or locking inventory. */
   getBookingPreview(
     target: BookingTarget,
