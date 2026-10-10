@@ -43,6 +43,7 @@ export const BookingTargetSchema = z
     bookingPolicy: BookingPolicySchema,
     mode: BookingTargetModeSchema,
     knownReservationReleaseAt: z.string().datetime({ offset: true }).optional(),
+    cancellationWatchStopAt: z.string().datetime({ offset: true }).optional(),
   })
   .superRefine((target, context) => {
     if (target.dateRange.startDate > target.dateRange.endDate) {

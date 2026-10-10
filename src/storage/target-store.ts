@@ -9,8 +9,8 @@ export interface TargetRecord {
   readonly version: number;
   readonly createdAt: string;
   readonly updatedAt: string;
-  readonly pauseReason?: string;
-  readonly confirmation?: BookingConfirmation;
+  readonly pauseReason?: string | undefined;
+  readonly confirmation?: BookingConfirmation | undefined;
   /**
    * Availability evidence from the most recent engine run that reached an
    * availability lookup, kept so the console can explain a pause with every

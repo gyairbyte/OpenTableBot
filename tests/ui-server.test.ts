@@ -171,6 +171,7 @@ describe("UiServer", () => {
     expect(html).toContain("Create Windows task");
     expect(html).toContain("Run now");
     expect(html).toContain("policy-list");
+    expect(html).toContain("Stop watching at");
   });
 
   it("reports bridge and scheduler status", async () => {

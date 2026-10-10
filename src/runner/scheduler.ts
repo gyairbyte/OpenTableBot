@@ -15,6 +15,8 @@ export interface ReservationSchedulerOptions {
   readonly warmUpLeadMs?: number;
   /** Readiness poll interval during warm-up. Default 5 s. */
   readonly readinessPollMs?: number;
+  /** Minimum interval between cancellation-watch availability checks. */
+  readonly cancellationWatchPollMs?: number;
   /**
    * Full readiness probe: the browser session must be usable, not merely
    * signed in. When supplied, the scheduler refuses to start a run against a
@@ -27,12 +29,36 @@ export interface ReservationSchedulerOptions {
 
 const DEFAULT_WARM_UP_LEAD_MS = 60_000;
 const DEFAULT_READINESS_POLL_MS = 5_000;
+const DEFAULT_CANCELLATION_WATCH_POLL_MS = 30_000;
+
+function localDateInTimeZone(now: number, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(now));
+  const values = new Map(
+    parts
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  );
+  return `${values.get("year")}-${values.get("month")}-${values.get("day")}`;
+}
 
 /**
- * Bounded known-drop scheduler. For each due `known-drop` target it warms up
- * before the release time, waits until the drop, then delegates exactly one
- * attempt to the engine. It never retries after the drop; transient and
- * safety failures are handled by the engine's fail-closed pause.
+ * Scheduler for both target modes.
+ *
+ * For each due `known-drop` target it warms up before the release time, waits
+ * until the drop, then delegates exactly one attempt to the engine. It never
+ * retries after the drop.
+ *
+ * For each `cancellation-watch` target it throttles to one engine run per poll
+ * interval and keeps doing so until the watcher books, reaches its configured
+ * stop time, or outlives the reservation date.
+ *
+ * In both modes transient and safety failures are handled by the engine's
+ * fail-closed pause.
  */
 export class ReservationScheduler {
   private readonly warmUpLeadMs: number;
@@ -40,6 +66,8 @@ export class ReservationScheduler {
   private readonly now: () => number;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly readiness: (() => Promise<SchedulerReadiness>) | undefined;
+  private readonly cancellationWatchPollMs: number;
+  private readonly lastCancellationWatchAt = new Map<string, number>();
 
   constructor(
     private readonly engine: BookingEngine,
@@ -52,6 +80,8 @@ export class ReservationScheduler {
     this.readinessPollMs = options.readinessPollMs ?? DEFAULT_READINESS_POLL_MS;
     this.now = options.now ?? (() => Date.now());
     this.readiness = options.readiness;
+    this.cancellationWatchPollMs =
+      options.cancellationWatchPollMs ?? DEFAULT_CANCELLATION_WATCH_POLL_MS;
     this.sleep =
       options.sleep ??
       ((milliseconds) =>
@@ -84,6 +114,10 @@ export class ReservationScheduler {
 
   async runTarget(record: TargetRecord): Promise<void> {
     const target = record.target;
+    if (target.mode === "cancellation-watch") {
+      await this.runCancellationWatch(record);
+      return;
+    }
     if (
       target.mode !== "known-drop" ||
       target.knownReservationReleaseAt === undefined
@@ -114,6 +148,31 @@ export class ReservationScheduler {
         return;
       }
     }
+    await this.engine.runOnce(target.id);
+  }
+
+  private async runCancellationWatch(record: TargetRecord): Promise<void> {
+    const target = record.target;
+    const now = this.now();
+    const stopAt = target.cancellationWatchStopAt === undefined
+      ? undefined
+      : Date.parse(target.cancellationWatchStopAt);
+    if (stopAt !== undefined && (Number.isNaN(stopAt) || now >= stopAt)) {
+      await this.pause(record, "Cancellation watcher reached its configured stop time");
+      return;
+    }
+    if (localDateInTimeZone(now, target.restaurant.timeZone) > target.dateRange.endDate) {
+      await this.pause(record, "Cancellation watcher passed the target date");
+      return;
+    }
+    const lastRun = this.lastCancellationWatchAt.get(target.id);
+    if (lastRun !== undefined && now - lastRun < this.cancellationWatchPollMs) return;
+    // A watcher runs for hours, so a browser that is momentarily unavailable
+    // (a closed tab, a reloading extension, a machine resuming from sleep) has
+    // to be survivable. Skipping this poll leaves the target armed for the
+    // next one; pausing here would silently end the watch instead.
+    if (!(await this.probeReadiness()).ready) return;
+    this.lastCancellationWatchAt.set(target.id, now);
     await this.engine.runOnce(target.id);
   }
 

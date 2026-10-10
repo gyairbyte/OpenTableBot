@@ -3,17 +3,20 @@ import type {
   AvailabilityRunDetail,
 } from "../domain/availability-detail.js";
 import type { BookingTarget } from "../domain/booking-target.js";
-import type { ReservationSlot } from "../domain/reservation-slot.js";
 import {
   RUNNABLE_TARGET_STATES,
   TargetState,
   assertTargetTransition,
   canTransitionTarget,
 } from "../domain/target-state.js";
-import { OpenTableAdapterError } from "../opentable/errors.js";
+import {
+  AdapterFailureDisposition,
+  OpenTableAdapterError,
+} from "../opentable/errors.js";
 import type { TargetRecord } from "../storage/target-store.js";
 import {
   createBookingPlan,
+  type BookingPlan,
   type BookingEngine,
   type BookingEngineDependencies,
 } from "./booking-engine.js";
@@ -79,10 +82,18 @@ function describeNoMatch(
 }
 
 /**
- * Single-shot scheduler engine. It selects only a slot at the target's exact
- * preferred time; when that time is absent it pauses and notifies instead of
- * substituting a nearby time. Every failure is fail-closed into PAUSED, and an
- * ambiguous submission becomes terminal OUTCOME_UNKNOWN and is never retried.
+ * Scheduler engine for one run of one target.
+ *
+ * A known-drop run is single-shot and selects only a slot at the target's
+ * exact preferred time; when that time is absent it pauses and notifies
+ * instead of substituting a nearby time. A cancellation-watch run instead
+ * accepts any acceptable time inside the configured window, takes the one
+ * closest to the preferred time, and returns to ARMED so the scheduler can
+ * poll again.
+ *
+ * Every failure is fail-closed: it pauses unless a cancellation watcher can
+ * safely resume watching. An ambiguous submission becomes terminal
+ * OUTCOME_UNKNOWN and is never retried, in either mode.
  */
 export class ControlledBookingEngine implements BookingEngine {
   constructor(
@@ -135,6 +146,55 @@ export class ControlledBookingEngine implements BookingEngine {
       await notifier.notify({ type: "target-paused", targetId, reason });
     };
 
+    /**
+     * Returns a cancellation watcher to ARMED so the next poll happens. A
+     * mid-flight state is routed through SLOT_LOST, the transition the state
+     * machine already defines for a lock attempt that did not complete.
+     * Reports whether the watch actually resumed, so a caller can fail closed
+     * instead of leaving the target parked in a state no scheduler polls.
+     */
+    const resumeWatching = async (
+      patch: Partial<TargetRecord> = {},
+    ): Promise<boolean> => {
+      const resumePatch = { pauseReason: undefined, ...patch };
+      const waiting = (): boolean =>
+        current.state === TargetState.ARMED ||
+        current.state === TargetState.WAITING;
+      if (
+        !waiting() &&
+        !canTransitionTarget(current.state, TargetState.WAITING) &&
+        canTransitionTarget(current.state, TargetState.SLOT_LOST)
+      ) {
+        await move(TargetState.SLOT_LOST, resumePatch);
+      }
+      if (!waiting() && canTransitionTarget(current.state, TargetState.WAITING)) {
+        await move(TargetState.WAITING, resumePatch);
+      }
+      if (current.state === TargetState.WAITING) {
+        await move(TargetState.ARMED, resumePatch);
+      }
+      return current.state === TargetState.ARMED;
+    };
+
+    /**
+     * A retryable failure only ends a cancellation watch when resuming it
+     * would be unsafe or impossible. SUBMITTING is excluded deliberately: a
+     * transport failure there leaves the submission outcome ambiguous, so the
+     * watcher must stop and be inspected rather than quietly book again.
+     */
+    const handleFailure = async (error: unknown): Promise<void> => {
+      if (
+        target.mode === "cancellation-watch" &&
+        error instanceof OpenTableAdapterError &&
+        error.disposition === AdapterFailureDisposition.RETRY_WAITING &&
+        current.state !== TargetState.SUBMITTING &&
+        (await resumeWatching())
+      ) {
+        return;
+      }
+      await pause(describeFailure(error));
+    };
+
     // Moving into WAITING also clears any availability detail left over from
     // a previous run, so the console can never mistake an old capture for
     // this run's evidence. A target that is already waiting skips the
@@ -146,21 +206,27 @@ export class ControlledBookingEngine implements BookingEngine {
     const availabilityAttempts = this.options.availabilityAttempts ?? 1;
     const availabilityRetryDelayMs = this.options.availabilityRetryDelayMs ?? 250;
     const now = this.options.now ?? (() => Date.now());
-    let slots: readonly ReservationSlot[] = [];
-    let preferred: readonly ReservationSlot[] = [];
+    let plan: BookingPlan = { kind: "no-match" };
     const attempts: AvailabilityAttempt[] = [];
     for (let attempt = 1; attempt <= availabilityAttempts; attempt += 1) {
       const startedAtMs = now();
       let observed;
       try {
         observed = await adapter.findSlotsDetailed(target);
-        slots = observed.acceptableSlots;
       } catch (error) {
-        await pause(describeFailure(error));
+        await handleFailure(error);
         return;
       }
-      preferred = slots.filter(
+      const slots = observed.acceptableSlots;
+      const preferred = slots.filter(
         (slot) => slot.localTime === target.timeWindow.preferred,
+      );
+      // A watcher accepts any acceptable time inside the window and lets the
+      // existing ranking pick the one closest to the preferred time. A
+      // known-drop run still considers the exact preferred time only.
+      plan = createBookingPlan(
+        target,
+        target.mode === "cancellation-watch" ? slots : preferred,
       );
       attempts.push({
         startedAt: new Date(startedAtMs).toISOString(),
@@ -169,20 +235,32 @@ export class ControlledBookingEngine implements BookingEngine {
         preferredSlots: preferred.length,
         observedSlots: observed.observedSlots,
       });
-      if (preferred.length > 0 || attempt === availabilityAttempts) break;
+      if (plan.kind !== "no-match" || attempt === availabilityAttempts) break;
       await new Promise((resolve) => setTimeout(resolve, availabilityRetryDelayMs));
     }
     const availabilityDetail: AvailabilityRunDetail = {
       preferredTime: target.timeWindow.preferred,
       earliest: target.timeWindow.earliest,
       latest: target.timeWindow.latest,
-      matched: preferred.length > 0,
+      matched: plan.kind !== "no-match",
       capturedAt: new Date(now()).toISOString(),
       attempts,
     };
-    const plan = createBookingPlan(target, preferred);
     if (plan.kind === "no-match") {
-      await pause(describeNoMatch(target, attempts, availabilityAttempts), availabilityDetail);
+      // The watcher keeps its scan evidence while it stays armed, so the
+      // console can show what the most recent poll actually saw.
+      if (
+        target.mode === "cancellation-watch" &&
+        (await resumeWatching({ availabilityDetail }))
+      ) {
+        return;
+      }
+      await pause(
+        target.mode === "cancellation-watch"
+          ? `Watcher found no acceptable time in ${target.timeWindow.earliest}-${target.timeWindow.latest} after ${availabilityAttempts} availability attempt(s)`
+          : describeNoMatch(target, attempts, availabilityAttempts),
+        availabilityDetail,
+      );
       return;
     }
 
@@ -197,6 +275,14 @@ export class ControlledBookingEngine implements BookingEngine {
         },
       });
       if (result.status === "dry-run") {
+        // A Dry Run watcher neither locks nor submits, so there is nothing to
+        // inspect and pausing would end a watch the operator asked to keep.
+        if (
+          target.mode === "cancellation-watch" &&
+          (await resumeWatching({ availabilityDetail }))
+        ) {
+          return;
+        }
         await pause("Dry run completed; no reservation was created");
         return;
       }
@@ -220,7 +306,7 @@ export class ControlledBookingEngine implements BookingEngine {
         reason: result.submission.message,
       });
     } catch (error) {
-      await pause(describeFailure(error));
+      await handleFailure(error);
     }
   }
 }
