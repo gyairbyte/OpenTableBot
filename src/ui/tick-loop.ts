@@ -1,4 +1,5 @@
 import type { ReservationScheduler } from "../runner/scheduler.js";
+import type { TargetRecord } from "../storage/target-store.js";
 
 export interface SchedulerTickLoopOptions {
   /** Tick interval. Default 5 s. */
@@ -13,6 +14,9 @@ export interface SchedulerTickLoopOptions {
 }
 
 const DEFAULT_INTERVAL_MS = 5_000;
+
+type SchedulerTickLoopScheduler = Pick<ReservationScheduler, "runDueTargets"> &
+  Partial<Pick<ReservationScheduler, "runTargetNow">>;
 
 /**
  * Drives the reservation scheduler on an interval for the operator console.
@@ -30,7 +34,7 @@ export class SchedulerTickLoop {
   private lastSkippedReason: string | undefined;
 
   constructor(
-    private readonly scheduler: Pick<ReservationScheduler, "runDueTargets">,
+    private readonly scheduler: SchedulerTickLoopScheduler,
     options: SchedulerTickLoopOptions = {},
   ) {
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
@@ -74,6 +78,26 @@ export class SchedulerTickLoop {
         this.lastTickError = message;
         this.onError(message);
       }
+    })();
+    this.inFlight = pass;
+    try {
+      await pass;
+    } finally {
+      this.inFlight = undefined;
+    }
+  }
+
+  async runTargetNow(record: TargetRecord): Promise<void> {
+    if (this.inFlight !== undefined) {
+      throw new Error("The scheduler is already running a pass");
+    }
+    if (this.scheduler.runTargetNow === undefined) {
+      throw new Error("Immediate scheduler runs are unavailable");
+    }
+    const pass = (async () => {
+      const blocked = await this.blockedBy?.();
+      if (blocked !== undefined) throw new Error(blocked);
+      await this.scheduler.runTargetNow?.(record);
     })();
     this.inFlight = pass;
     try {

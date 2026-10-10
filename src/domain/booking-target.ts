@@ -24,6 +24,8 @@ export const BookingTargetSchema = z
       id: z.string().min(1),
       name: z.string().min(1),
       timeZone: IanaTimeZoneSchema,
+      /** OpenTable restaurant profile URL or relative profile path. */
+      profileUrl: z.string().min(1).max(300).optional(),
     }),
     dateRange: z.object({
       startDate: LocalDateSchema,

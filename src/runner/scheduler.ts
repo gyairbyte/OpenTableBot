@@ -66,6 +66,22 @@ export class ReservationScheduler {
     }
   }
 
+  async runTargetNow(record: TargetRecord): Promise<void> {
+    const current = await this.store.get(record.target.id);
+    if (current === undefined) return;
+    if (this.readiness !== undefined) {
+      const readiness = await this.probeReadiness();
+      if (!readiness.ready) {
+        await this.pause(
+          current,
+          `Browser was not ready for an immediate run (${readiness.detail})`,
+        );
+        return;
+      }
+    }
+    await this.engine.runOnce(current.target.id);
+  }
+
   async runTarget(record: TargetRecord): Promise<void> {
     const target = record.target;
     if (
@@ -133,10 +149,12 @@ export class ReservationScheduler {
   }
 
   private async pause(record: TargetRecord, reason: string): Promise<void> {
-    if (!canTransitionTarget(record.state, TargetState.PAUSED)) return;
+    const current = await this.store.get(record.target.id);
+    if (current === undefined) return;
+    if (!canTransitionTarget(current.state, TargetState.PAUSED)) return;
     await this.store.save(
-      { ...record, state: TargetState.PAUSED, pauseReason: reason },
-      record.version,
+      { ...current, state: TargetState.PAUSED, pauseReason: reason },
+      current.version,
     );
     await this.notifier.notify({
       type: "target-paused",

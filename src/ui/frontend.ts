@@ -46,6 +46,10 @@ export const FRONTEND_HTML = String.raw`<!doctype html>
   .state-paused, .state-outcome_unknown, .state-slot_lost { color: #b3261e; }
   .state-waiting, .state-locking, .state-locked, .state-submitting, .state-revalidating { color: #a2530a; }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .task-row { grid-template-columns: repeat(5, minmax(130px, 1fr)); }
+  .task-row.secondary { grid-template-columns: repeat(4, minmax(150px, 1fr)); }
+  .policy-list { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+  .policy-list label { width: min(100%, 360px); }
   .banner { padding: 8px 12px; border-radius: 6px; font-size: 13px; margin-bottom: 16px; background: #fff4e5; border: 1px solid #f0c48a; color: #8a4b08; }
   fieldset { border: 1px solid #e5e8ee; border-radius: 6px; padding: 10px 12px; margin: 12px 0 0; }
   legend { font-size: 12px; color: #4b5563; padding: 0 4px; }
@@ -115,27 +119,32 @@ export const FRONTEND_HTML = String.raw`<!doctype html>
     <label>Restaurant id<input name="restaurantId" required></label>
     <label>Restaurant name<input name="restaurantName" required></label>
     <label>Time zone<input name="timeZone" value="America/New_York" required></label>
-    <label>Party size<input name="partySize" type="number" min="1" max="20" value="2" required></label>
-    <label>Start date<input name="startDate" type="date" required></label>
-    <label>End date<input name="endDate" type="date" required></label>
-    <label>Earliest time<input name="earliest" type="time" required></label>
-    <label>Latest time<input name="latest" type="time" required></label>
-    <label>Preferred time<input name="preferred" type="time" required></label>
-    <label>Mode
-      <select name="mode">
-        <option value="known-drop">known-drop (release time)</option>
-        <option value="cancellation-watch">cancellation-watch</option>
-      </select>
-    </label>
-    <label>Release time (known-drop)<input name="releaseAt" type="datetime-local"></label>
+    <input name="profileUrl" type="hidden">
+    <div class="grid wide task-row">
+      <label>Party size<input name="partySize" type="number" min="1" max="20" value="2" required></label>
+      <label>Start date<input name="startDate" type="date" required></label>
+      <label>End date<input name="endDate" type="date" required></label>
+      <label>Earliest time<input name="earliest" type="time" required></label>
+      <label>Latest time<input name="latest" type="time" required></label>
+    </div>
+    <div class="grid wide task-row secondary">
+      <label>Preferred time<input name="preferred" type="time" required></label>
+      <label>Mode
+        <select name="mode">
+          <option value="known-drop">known-drop (release time)</option>
+          <option value="cancellation-watch">cancellation-watch</option>
+        </select>
+      </label>
+      <label>Release time (known-drop)<input name="releaseAt" type="datetime-local"></label>
+      <label>Dining area policy
+        <select name="diningMode">
+          <option value="any">any</option>
+          <option value="allow">allow listed areas</option>
+          <option value="prefer">prefer listed areas</option>
+        </select>
+      </label>
+    </div>
     <div id="mode-hint" class="hint wide"></div>
-    <label>Dining area policy
-      <select name="diningMode">
-        <option value="any">any</option>
-        <option value="allow">allow listed areas</option>
-        <option value="prefer">prefer listed areas</option>
-      </select>
-    </label>
     <label id="dining-categories-label" hidden>Extra allowed categories
       <select name="diningCategories" multiple size="4"></select>
     </label>
@@ -150,7 +159,7 @@ export const FRONTEND_HTML = String.raw`<!doctype html>
 
     <fieldset class="wide">
       <legend>Booking policy (fail-closed)</legend>
-      <div class="grid">
+      <div class="policy-list">
         <label class="check"><input name="autoBookAuthorized" type="checkbox"> Authorize automatic booking</label>
         <label class="check"><input name="allowPrepaid" type="checkbox"> Allow prepaid reservations</label>
         <label>Max prepaid cents<input name="maxAuthorizedPrepaidCents" type="number" min="0" value="0"></label>
@@ -246,6 +255,7 @@ var state = {
   editing: null,
   lastTargetsJson: "",
   lastStatusJson: "",
+  mode: "dry-run",
   suggestions: [],
   suggestionIndex: -1,
   searchTimer: null
@@ -381,6 +391,7 @@ function selectedAreas() {
 function loadStatus() {
   return api("/api/status").then(function (payload) {
     var status = payload.status;
+    state.mode = status.mode;
     byId("mode-select").value = status.mode;
     var serialized = JSON.stringify(status);
     if (serialized === state.lastStatusJson) return;
@@ -480,6 +491,12 @@ function renderTargets(targets) {
     if (record.state === "DRAFT" || record.state === "PAUSED") {
       actions.appendChild(actionButton("Arm", "arm", record));
     }
+    if (record.state === "ARMED" || record.state === "WAITING") {
+      actions.appendChild(runNowButton(record));
+    }
+    if (record.target.mode === "known-drop" && record.target.knownReservationReleaseAt) {
+      actions.appendChild(windowsTaskButton(record));
+    }
     if (["DRAFT", "ARMED", "WAITING", "MATCH_FOUND", "VALIDATING", "LOCKING", "LOCKED", "REVALIDATING", "SUBMITTING"].indexOf(record.state) >= 0) {
       actions.appendChild(actionButton("Pause", "pause", record));
     }
@@ -487,6 +504,68 @@ function renderTargets(targets) {
     row.appendChild(actions);
     body.appendChild(row);
   });
+}
+
+function runNowButton(record) {
+  var button = el("button", "Run now", "secondary");
+  button.type = "button";
+  button.addEventListener("click", function () {
+    var modeLabel = state.mode === "execute" ? "LIVE" : "DRY RUN";
+    if (!window.confirm(
+      "Run " + record.target.restaurant.name + " immediately in " + modeLabel +
+      " mode? Live mode may submit a real reservation."
+    )) return;
+    button.disabled = true;
+    api("/api/targets/" + encodeURIComponent(record.target.id) + "/run-now", {
+      method: "POST",
+      body: { version: record.version }
+    }).then(function () {
+      setMessage("targets-message", "Immediate run started for " + record.target.id, "ok");
+      return loadTargets();
+    }).catch(function (error) {
+      button.disabled = false;
+      setMessage("targets-message", error.message, "error");
+    });
+  });
+  return button;
+}
+
+function windowsTaskButton(record) {
+  var button = el("button", "Create Windows task", "secondary");
+  button.type = "button";
+  button.addEventListener("click", function () {
+    var restaurantUrl = record.target.restaurant.profileUrl || "";
+    if (!restaurantUrl) {
+      restaurantUrl = window.prompt(
+        "Enter the OpenTable restaurant profile URL:",
+        "https://www.opentable.com/r/restaurant-name"
+      ) || "";
+    }
+    if (!restaurantUrl.trim()) return;
+    var modeLabel = state.mode === "execute" ? "LIVE" : "DRY RUN";
+    if (!window.confirm(
+      "Register a Windows wake task for " + record.target.restaurant.name +
+      " in " + modeLabel + " mode? This replaces the task with the same target name."
+    )) return;
+    button.disabled = true;
+    api("/api/targets/" + encodeURIComponent(record.target.id) + "/windows-task", {
+      method: "POST",
+      body: { version: record.version, restaurantUrl: restaurantUrl.trim() }
+    }).then(function (payload) {
+      var task = payload.task;
+      setMessage(
+        "targets-message",
+        "Windows task " + task.taskName + " registered for " + task.dropDate +
+          " " + task.dropTime + ".",
+        "ok"
+      );
+      button.disabled = false;
+    }).catch(function (error) {
+      button.disabled = false;
+      setMessage("targets-message", error.message, "error");
+    });
+  });
+  return button;
 }
 
 function editButton(record) {
@@ -628,6 +707,7 @@ function useRestaurant(result) {
   var search = byId("search-form");
   form.restaurantId.value = result.restaurantId;
   form.restaurantName.value = result.name;
+  form.profileUrl.value = result.profileUrl || "";
   if (search.date.value) {
     form.startDate.value = search.date.value;
     form.endDate.value = search.date.value;
@@ -687,7 +767,8 @@ function buildTarget() {
     restaurant: {
       id: form.restaurantId.value.trim(),
       name: form.restaurantName.value.trim(),
-      timeZone: form.timeZone.value.trim()
+      timeZone: form.timeZone.value.trim(),
+      ...(form.profileUrl.value.trim() ? { profileUrl: form.profileUrl.value.trim() } : {})
     },
     dateRange: {
       startDate: form.startDate.value,
@@ -945,6 +1026,7 @@ function startEdit(record) {
   var form = byId("task-form");
   form.restaurantId.value = target.restaurant.id;
   form.restaurantName.value = target.restaurant.name;
+  form.profileUrl.value = target.restaurant.profileUrl || "";
   form.timeZone.value = target.restaurant.timeZone;
   form.partySize.value = target.partySize;
   form.startDate.value = target.dateRange.startDate;

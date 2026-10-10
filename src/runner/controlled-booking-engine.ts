@@ -93,7 +93,9 @@ export class ControlledBookingEngine implements BookingEngine {
       await notifier.notify({ type: "target-paused", targetId, reason });
     };
 
-    await move(TargetState.WAITING);
+    if (current.state !== TargetState.WAITING) {
+      await move(TargetState.WAITING);
+    }
 
     const availabilityAttempts = this.options.availabilityAttempts ?? 1;
     const availabilityRetryDelayMs = this.options.availabilityRetryDelayMs ?? 250;

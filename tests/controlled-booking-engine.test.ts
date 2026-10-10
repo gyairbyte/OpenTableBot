@@ -111,6 +111,20 @@ describe("ControlledBookingEngine", () => {
     expect(events.some((event) => event.type === "booking-confirmed")).toBe(true);
   });
 
+  it("can run a target that is already waiting", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seed(store, { state: TargetState.WAITING });
+    const adapter = bookingAdapter();
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: true },
+    );
+
+    await engine.runOnce("target-1");
+
+    expect((await store.get("target-1"))?.state).toBe("BOOKED");
+  });
+
   it("pauses when the exact preferred time is absent", async () => {
     const store = new FileTargetStore({ directory: await tempDirectory() });
     await seed(store);

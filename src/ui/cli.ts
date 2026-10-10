@@ -8,6 +8,7 @@ import {
   describeReadiness,
 } from "../opentable/bridge/readiness.js";
 import { OpenTableAdapterError } from "../opentable/errors.js";
+import { registerWindowsTask } from "../platform/windows-scheduled-task.js";
 import { ControlledBookingEngine } from "../runner/controlled-booking-engine.js";
 import { ReservationScheduler } from "../runner/scheduler.js";
 import {
@@ -110,7 +111,11 @@ async function main(): Promise<void> {
   const notifier = new LocalNotifier();
   const engine = new ControlledBookingEngine(
     { adapter, store, notifier },
-    { execute: () => execute },
+    {
+      execute: () => execute,
+      availabilityAttempts: 3,
+      availabilityRetryDelayMs: 250,
+    },
   );
   const scheduler = new ReservationScheduler(engine, adapter, store, notifier, {
     warmUpLeadMs: warmUpLeadMs(flags),
@@ -182,6 +187,15 @@ async function main(): Promise<void> {
     setMode: (mode) => {
       execute = mode === "execute";
     },
+    runTargetNow: (record) => loop.runTargetNow(record),
+    createWindowsTask: (record, restaurantUrl) =>
+      registerWindowsTask(record.target, {
+        restaurantUrl,
+        mode: execute ? "execute" : "dry-run",
+        warmUpSeconds: 600,
+        availabilityAttempts: 3,
+        availabilityRetryDelayMs: 250,
+      }),
   });
 
   const address = await server.start();

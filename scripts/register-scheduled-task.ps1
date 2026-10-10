@@ -51,6 +51,9 @@ if ($DropDate -ne "") {
   $date = [datetime]::ParseExact($DropDate, "yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture)
   $triggerAt = $date.Date.Add($triggerAt.TimeOfDay)
 }
+if ($triggerAt -le (Get-Date)) {
+  throw "The Windows task warm-up time has already passed."
+}
 
 $argumentList = @(
   "-NoProfile",

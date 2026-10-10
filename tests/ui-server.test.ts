@@ -11,6 +11,8 @@ import { AdapterFailureCategory, OpenTableAdapterError } from "../src/opentable/
 import type { RestaurantSearchQuery } from "../src/opentable/adapter.js";
 import type { SafeSearchResults } from "../src/opentable/browser/search-types.js";
 import { FileTargetStore } from "../src/storage/file-target-store.js";
+import type { WindowsTaskRegistration } from "../src/platform/windows-scheduled-task.js";
+import type { TargetRecord } from "../src/storage/target-store.js";
 import { UiServer, type UiRuntimeStatus } from "../src/ui/server.js";
 import { makePreview, makeSlot, makeTarget } from "./fixtures.js";
 
@@ -20,6 +22,8 @@ interface Harness {
   readonly search: ReturnType<typeof vi.fn>;
   readonly findSlots: ReturnType<typeof vi.fn>;
   readonly getBookingPreview: ReturnType<typeof vi.fn>;
+  readonly runTargetNow: ReturnType<typeof vi.fn>;
+  readonly createWindowsTask: ReturnType<typeof vi.fn>;
   readonly close: () => Promise<void>;
 }
 
@@ -30,6 +34,11 @@ interface HarnessOverrides {
     target: BookingTarget,
     slot: ReservationSlot,
   ) => Promise<BookingPreview>;
+  readonly runTargetNow?: (record: TargetRecord) => Promise<void>;
+  readonly createWindowsTask?: (
+    record: TargetRecord,
+    restaurantUrl: string,
+  ) => Promise<WindowsTaskRegistration>;
   readonly setMode?: (mode: "dry-run" | "execute") => void | Promise<void>;
 }
 
@@ -59,6 +68,20 @@ async function startHarness(overrides: HarnessOverrides = {}): Promise<Harness> 
     overrides.getBookingPreview ??
       (async (): Promise<BookingPreview> => makePreview()),
   );
+  const runTargetNow = vi.fn(overrides.runTargetNow ?? (async (): Promise<void> => undefined));
+  const createWindowsTask = vi.fn(
+    overrides.createWindowsTask ??
+      (async (): Promise<WindowsTaskRegistration> => ({
+        taskName: "OpenTableBot-target-1",
+        dropDate: "2026-08-01",
+        dropTime: "09:00",
+        restaurantUrl: "https://www.opentable.com/r/example",
+        mode: "dry-run",
+        warmUpSeconds: 600,
+        availabilityAttempts: 3,
+        availabilityRetryDelayMs: 250,
+      })),
+  );
   let mode: "dry-run" | "execute" = "dry-run";
   const server = new UiServer({
     store,
@@ -73,6 +96,8 @@ async function startHarness(overrides: HarnessOverrides = {}): Promise<Harness> 
       mode = nextMode;
       return overrides.setMode?.(nextMode);
     },
+    runTargetNow,
+    createWindowsTask,
     port: 0,
   });
   const address = await server.start();
@@ -82,6 +107,8 @@ async function startHarness(overrides: HarnessOverrides = {}): Promise<Harness> 
     search,
     findSlots,
     getBookingPreview,
+    runTargetNow,
+    createWindowsTask,
     close: () => server.close(),
   };
   running.push(harness);
@@ -141,6 +168,9 @@ describe("UiServer", () => {
     expect(html).toContain("/api/targets");
     expect(html).toContain("mode-select");
     expect(html).toContain("/api/mode");
+    expect(html).toContain("Create Windows task");
+    expect(html).toContain("Run now");
+    expect(html).toContain("policy-list");
   });
 
   it("reports bridge and scheduler status", async () => {
@@ -264,6 +294,49 @@ describe("UiServer", () => {
       readonly target: { readonly state: string };
     };
     expect(payload.target.state).toBe("ARMED");
+  });
+
+  it("runs an armed target immediately with a version guard", async () => {
+    const harness = await startHarness();
+    await jsonPost(harness, "/api/targets", { target: makeTarget(), arm: true });
+
+    const response = await jsonPost(harness, "/api/targets/target-1/run-now", {
+      version: 1,
+    });
+
+    expect(response.status).toBe(200);
+    expect(harness.runTargetNow).toHaveBeenCalledWith(
+      expect.objectContaining({ version: 1, state: "ARMED" }),
+    );
+  });
+
+  it("registers a Windows task for a known drop", async () => {
+    const harness = await startHarness();
+    await jsonPost(harness, "/api/targets", { target: makeTarget(), arm: true });
+
+    const response = await jsonPost(harness, "/api/targets/target-1/windows-task", {
+      version: 1,
+      restaurantUrl: "/r/example-restaurant",
+    });
+
+    expect(response.status).toBe(200);
+    expect(harness.createWindowsTask).toHaveBeenCalledWith(
+      expect.objectContaining({ version: 1, state: "ARMED" }),
+      "https://www.opentable.com/r/example-restaurant",
+    );
+  });
+
+  it("rejects a Windows task without a restaurant slug", async () => {
+    const harness = await startHarness();
+    await jsonPost(harness, "/api/targets", { target: makeTarget(), arm: true });
+
+    const response = await jsonPost(harness, "/api/targets/target-1/windows-task", {
+      version: 1,
+      restaurantUrl: "/r/",
+    });
+
+    expect(response.status).toBe(400);
+    expect(harness.createWindowsTask).not.toHaveBeenCalled();
   });
 
   it("rejects an invalid task definition", async () => {

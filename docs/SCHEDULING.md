@@ -120,6 +120,12 @@ attempts miss, the target is paused with the failure detail rather than run.
 CLI. It accepts the same flags as the scheduler for `--tick-seconds`,
 `--warm-up-seconds`, and `--dry-run`, plus `--port <n>`. It starts in Live mode;
 the header control switches between Live and Dry Run without restarting.
+Each runnable task also has a guarded **Run now** action that bypasses the
+release wait and uses the current console mode. Known-drop tasks have a
+**Create Windows task** action that registers a `-WakeToRun` task for the
+target's local release time, using a 10-minute warm-up and three bounded
+availability attempts. Both actions require browser confirmation. Windows task
+registration also requires local PowerShell permission to register a task.
 
 ```sh
 # Live console on the default port
@@ -152,6 +158,10 @@ The console lets you:
 - create a task from the same `BookingTarget` fields the state file uses,
   including the dining-area policy, the fail-closed booking policy, and
   `knownReservationReleaseAt`, saved as `DRAFT` or `ARMED`;
+- run a runnable task immediately with the current Live or Dry Run mode, or
+  register the Windows wake task directly from the table. The Windows action
+  uses the restaurant profile URL captured from search, or asks for it when an
+  older task does not have one stored;
 - edit an existing task in place. Edit reloads the record into the form and
   saves with a `PUT` guarded by the stored version, so a concurrent scheduler
   write still loses to the conflict check. Tasks that are mid-flight

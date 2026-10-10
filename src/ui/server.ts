@@ -15,11 +15,16 @@ import {
   LocalTimeSchema,
 } from "../domain/primitives.js";
 import type { BookingPreview, ReservationSlot } from "../domain/reservation-slot.js";
-import { TargetState, canTransitionTarget } from "../domain/target-state.js";
+import {
+  RUNNABLE_TARGET_STATES,
+  TargetState,
+  canTransitionTarget,
+} from "../domain/target-state.js";
 import type { RestaurantSearchQuery } from "../opentable/adapter.js";
 import type { SafeSearchResults } from "../opentable/browser/search-types.js";
 import { SearchRestaurantsRequestPayloadSchema } from "../opentable/bridge/protocol.js";
 import { AdapterFailureCategory, OpenTableAdapterError } from "../opentable/errors.js";
+import type { WindowsTaskRegistration } from "../platform/windows-scheduled-task.js";
 import { TargetStoreConflictError } from "../storage/file-target-store.js";
 import type { RemovableTargetStore, TargetRecord } from "../storage/target-store.js";
 import { FRONTEND_HTML } from "./frontend.js";
@@ -100,6 +105,11 @@ export interface UiServerOptions {
   readonly adapter: UiAdapter;
   readonly status: () => Promise<UiRuntimeStatus>;
   readonly setMode?: (mode: UiBookingMode) => void | Promise<void>;
+  readonly runTargetNow?: (record: TargetRecord) => Promise<void>;
+  readonly createWindowsTask?: (
+    record: TargetRecord,
+    restaurantUrl: string,
+  ) => Promise<WindowsTaskRegistration>;
   readonly host?: string;
   readonly port?: number;
   readonly now?: () => Date;
@@ -107,6 +117,15 @@ export interface UiServerOptions {
 
 const ModeRequestSchema = z.strictObject({
   mode: z.enum(["dry-run", "execute"]),
+});
+
+const TargetActionRequestSchema = z.strictObject({
+  version: z.number().int().nonnegative(),
+});
+
+const WindowsTaskRequestSchema = z.strictObject({
+  version: z.number().int().nonnegative(),
+  restaurantUrl: z.string().min(1).max(300),
 });
 
 export interface UiServerAddress {
@@ -199,6 +218,23 @@ function zodIssues(error: unknown): readonly Record<string, unknown>[] {
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown operator console failure";
+}
+
+function normalizeRestaurantUrl(raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw, "https://www.opentable.com");
+  } catch {
+    throw new HttpError(400, "Restaurant URL is invalid");
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.hostname !== "www.opentable.com" ||
+    !/^\/r\/[^/]+$/u.test(url.pathname)
+  ) {
+    throw new HttpError(400, "Restaurant URL must be an OpenTable restaurant profile URL");
+  }
+  return url.toString();
 }
 
 /**
@@ -396,6 +432,72 @@ export class UiServer {
         0,
       );
       sendJson(response, 201, { ok: true, target: saved });
+      return;
+    }
+
+    const runNow = /^\/api\/targets\/([^/]+)\/run-now$/.exec(path);
+    if (method === "POST" && runNow !== null) {
+      this.assertJsonMutation(request);
+      if (this.options.runTargetNow === undefined) {
+        throw new HttpError(409, "Immediate scheduler runs are unavailable in this console");
+      }
+      const targetId = decodeURIComponent(runNow[1] ?? "");
+      const body = await readJsonBody(request);
+      const payload = TargetActionRequestSchema.safeParse(body);
+      if (!payload.success) {
+        throw new HttpError(400, "Immediate run request is invalid", {
+          issues: zodIssues(payload.error),
+        });
+      }
+      const record = await this.options.store.get(targetId);
+      if (record === undefined) throw new HttpError(404, `Target ${targetId} was not found`);
+      if (!RUNNABLE_TARGET_STATES.includes(record.state)) {
+        throw new HttpError(409, `Cannot run a target in state ${record.state}`, {
+          reason: "INVALID_RUN_STATE",
+          state: record.state,
+        });
+      }
+      if (payload.data.version !== record.version) {
+        throw new TargetStoreConflictError(targetId, payload.data.version, record.version);
+      }
+      await this.options.runTargetNow(record);
+      sendJson(response, 200, {
+        ok: true,
+        target: await this.options.store.get(targetId),
+      });
+      return;
+    }
+
+    const windowsTask = /^\/api\/targets\/([^/]+)\/windows-task$/.exec(path);
+    if (method === "POST" && windowsTask !== null) {
+      this.assertJsonMutation(request);
+      if (this.options.createWindowsTask === undefined) {
+        throw new HttpError(409, "Windows task registration is unavailable in this console");
+      }
+      const targetId = decodeURIComponent(windowsTask[1] ?? "");
+      const body = await readJsonBody(request);
+      const payload = WindowsTaskRequestSchema.safeParse(body);
+      if (!payload.success) {
+        throw new HttpError(400, "Windows task request is invalid", {
+          issues: zodIssues(payload.error),
+        });
+      }
+      const record = await this.options.store.get(targetId);
+      if (record === undefined) throw new HttpError(404, `Target ${targetId} was not found`);
+      if (
+        record.target.mode !== "known-drop" ||
+        record.target.knownReservationReleaseAt === undefined
+      ) {
+        throw new HttpError(409, "Windows tasks require a known-drop target with a release time");
+      }
+      if (payload.data.version !== record.version) {
+        throw new TargetStoreConflictError(targetId, payload.data.version, record.version);
+      }
+      const task = await this.options.createWindowsTask(
+        record,
+        normalizeRestaurantUrl(payload.data.restaurantUrl),
+      );
+      sendJson(response, 200, { ok: true, task });
       return;
     }
 
