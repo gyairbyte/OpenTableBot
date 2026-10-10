@@ -60,14 +60,19 @@ export const AvailabilityAttemptSchema = z.strictObject({
 
 /**
  * Structured availability evidence for one engine run, stored on the target
- * record so the console can show it after a pause. It is diagnostic data only:
- * it never influences slot selection, booking, or retries.
+ * record so the console can show it after a pause, or after a cancellation
+ * watcher's latest poll. It is diagnostic data only: it never influences slot
+ * selection, booking, or retries.
  */
 export interface AvailabilityRunDetail {
   readonly preferredTime: string;
   readonly earliest: string;
   readonly latest: string;
-  /** Whether the exact preferred time was found on the final attempt. */
+  /**
+   * Whether the final attempt produced a bookable candidate: the exact
+   * preferred time for a known drop, or any acceptable time inside the window
+   * for a cancellation watch.
+   */
   readonly matched: boolean;
   readonly capturedAt: string;
   readonly attempts: readonly AvailabilityAttempt[];

@@ -144,7 +144,8 @@ export const FRONTEND_HTML = String.raw`<!doctype html>
           <option value="cancellation-watch">cancellation-watch</option>
         </select>
       </label>
-      <label>Release time (known-drop)<input name="releaseAt" type="datetime-local"></label>
+      <label id="release-at-label">Release time (known-drop)<input name="releaseAt" type="datetime-local"></label>
+      <label id="watch-stop-at-label" hidden>Stop watching at (restaurant local time)<input name="watchStopAt" type="datetime-local"></label>
       <label>Dining area policy
         <select name="diningMode">
           <option value="any">any</option>
@@ -352,11 +353,80 @@ function todayLocal() {
 }
 
 /** Renders an ISO instant into the local value a datetime-local input expects. */
-function toLocalInput(iso) {
+function toLocalInput(iso, timeZone) {
   var parsed = new Date(iso);
   if (isNaN(parsed.getTime())) return "";
-  return parsed.getFullYear() + "-" + pad2(parsed.getMonth() + 1) + "-" + pad2(parsed.getDate()) +
-    "T" + pad2(parsed.getHours()) + ":" + pad2(parsed.getMinutes());
+  var parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(parsed);
+  var values = {};
+  parts.forEach(function (part) {
+    if (part.type !== "literal") values[part.type] = part.value;
+  });
+  return values.year + "-" + values.month + "-" + values.day +
+    "T" + values.hour + ":" + values.minute;
+}
+
+function localInputToIso(value, timeZone) {
+  if (!value) return "";
+  var match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/u.exec(value);
+  if (!match) return "";
+  var year = Number(match[1]);
+  var month = Number(match[2]);
+  var day = Number(match[3]);
+  var hour = Number(match[4]);
+  var minute = Number(match[5]);
+  var guess = Date.UTC(year, month - 1, day, hour, minute);
+  var parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(new Date(guess));
+  var values = {};
+  parts.forEach(function (part) {
+    if (part.type !== "literal") values[part.type] = Number(part.value);
+  });
+  var instant = guess;
+  for (var iteration = 0; iteration < 3; iteration += 1) {
+    var represented = Date.UTC(
+      values.year, values.month - 1, values.day, values.hour, values.minute
+    );
+    var adjusted = guess - (represented - instant);
+    if (adjusted === instant) break;
+    instant = adjusted;
+    var adjustedParts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23"
+    }).formatToParts(new Date(instant));
+    adjustedParts.forEach(function (part) {
+      if (part.type !== "literal") values[part.type] = Number(part.value);
+    });
+  }
+  if (
+    values.year !== year ||
+    values.month !== month ||
+    values.day !== day ||
+    values.hour !== hour ||
+    values.minute !== minute
+  ) {
+    throw new Error("The selected local time does not exist in the restaurant timezone");
+  }
+  return new Date(instant).toISOString();
 }
 
 function formatMoney(cents, currency) {
@@ -487,7 +557,10 @@ function renderTargets(targets) {
     row.appendChild(el("td", record.target.dateRange.startDate + " to " + record.target.dateRange.endDate));
     row.appendChild(el("td", record.target.timeWindow.earliest + "-" + record.target.timeWindow.latest + " preferred " + record.target.timeWindow.preferred));
     row.appendChild(el("td", record.target.partySize));
-    row.appendChild(el("td", record.target.mode + (record.target.knownReservationReleaseAt ? " at " + record.target.knownReservationReleaseAt : "")));
+    var modeDetail = record.target.mode;
+    if (record.target.knownReservationReleaseAt) modeDetail += " at " + record.target.knownReservationReleaseAt;
+    if (record.target.cancellationWatchStopAt) modeDetail += " until " + record.target.cancellationWatchStopAt;
+    row.appendChild(el("td", modeDetail));
     row.appendChild(el("td", record.state, "state state-" + record.state.toLowerCase()));
     var detail = "";
     if (record.confirmation) detail = "confirmation " + record.confirmation.confirmationId + " at " + record.confirmation.startsAt;
@@ -805,8 +878,11 @@ function buildTarget() {
       autoBookAuthorized: form.autoBookAuthorized.checked
     }
   };
-  if (form.releaseAt.value) {
-    target.knownReservationReleaseAt = new Date(form.releaseAt.value).toISOString();
+  if (form.mode.value === "known-drop" && form.releaseAt.value) {
+    target.knownReservationReleaseAt = localInputToIso(form.releaseAt.value, form.timeZone.value);
+  }
+  if (form.mode.value === "cancellation-watch" && form.watchStopAt.value) {
+    target.cancellationWatchStopAt = localInputToIso(form.watchStopAt.value, form.timeZone.value);
   }
   var diningMode = form.diningMode.value;
   var areas = selectedAreas();
@@ -1049,7 +1125,12 @@ function startEdit(record) {
   form.latest.value = target.timeWindow.latest;
   form.preferred.value = target.timeWindow.preferred;
   form.mode.value = target.mode;
-  form.releaseAt.value = target.knownReservationReleaseAt ? toLocalInput(target.knownReservationReleaseAt) : "";
+  form.releaseAt.value = target.knownReservationReleaseAt
+    ? toLocalInput(target.knownReservationReleaseAt, target.restaurant.timeZone)
+    : "";
+  form.watchStopAt.value = target.cancellationWatchStopAt
+    ? toLocalInput(target.cancellationWatchStopAt, target.restaurant.timeZone)
+    : "";
   form.arm.checked = false;
 
   var policy = target.bookingPolicy;
@@ -1090,6 +1171,7 @@ function startEdit(record) {
     form.diningPreferences.value = "";
   }
   syncDiningFields();
+  syncModeFields();
   resetProbe();
   byId("preview-panel").hidden = true;
   setEditing(record);
@@ -1157,11 +1239,14 @@ function syncModeFields() {
   var form = byId("task-form");
   var knownDrop = form.mode.value === "known-drop";
   form.releaseAt.disabled = !knownDrop;
+  byId("release-at-label").hidden = !knownDrop;
+  form.watchStopAt.disabled = knownDrop;
+  byId("watch-stop-at-label").hidden = knownDrop;
   var note = byId("mode-hint");
   note.textContent = knownDrop
     ? "The scheduler only runs known-drop tasks that have a release time."
-    : "Not scheduled yet: the scheduler skips cancellation-watch tasks, so this task is stored but never run.";
-  note.className = "hint" + (knownDrop ? "" : " message warn");
+    : "The watcher checks every 30 seconds, chooses the closest available time in the window, and auto-books only when Live mode and policy authorize it.";
+  note.className = "hint";
 }
 
 function defaultTimes() {
@@ -1215,9 +1300,17 @@ function availabilityDetailWidget(detail) {
     ", captured " + formatInstant(detail.capturedAt) + ")";
   box.appendChild(summary);
   var overview = el("div", null, "detail-overview");
+  // A watcher matches any acceptable time in the window, so the outcome is
+  // read from the final attempt rather than from the match flag alone: saying
+  // "the preferred time was found" about a 19:15 table would be false.
+  var last = detail.attempts[detail.attempts.length - 1];
+  var outcome = !detail.matched
+    ? " · the preferred time was not found"
+    : (last && last.preferredSlots > 0
+        ? " · the preferred time was found"
+        : " · a bookable time was found in the window");
   overview.textContent = "Preferred " + detail.preferredTime +
-    " · window " + detail.earliest + "-" + detail.latest +
-    (detail.matched ? " · the preferred time was found" : " · the preferred time was not found");
+    " · window " + detail.earliest + "-" + detail.latest + outcome;
   box.appendChild(overview);
   detail.attempts.forEach(function (attempt, index) {
     var head = el("div", null, "detail-attempt");

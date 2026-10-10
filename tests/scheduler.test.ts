@@ -208,4 +208,100 @@ describe("ReservationScheduler", () => {
     expect(runOnce).toHaveBeenCalledWith("target-1");
     expect((await store.get("target-1"))?.state).toBe(TargetState.ARMED);
   });
+
+  it("polls cancellation-watch targets at the configured interval", async () => {
+    const directory = await tempDirectory();
+    const store = new FileTargetStore({ directory });
+    const target = makeTarget({
+      mode: "cancellation-watch",
+      dateRange: { startDate: "2026-10-02", endDate: "2026-10-02" },
+      cancellationWatchStopAt: "2026-10-01T13:00:00.000Z",
+    });
+    const stored = await store.save(
+      { target, state: TargetState.ARMED, version: 0, createdAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-01T00:00:00.000Z" },
+      0,
+    );
+    let current = Date.parse("2026-10-01T12:00:00.000Z");
+    const runOnce = vi.fn().mockResolvedValue(undefined);
+    const scheduler = new ReservationScheduler(
+      { runOnce },
+      { checkAuthentication: vi.fn().mockResolvedValue({ authenticated: true }) },
+      store,
+      { notify: vi.fn().mockResolvedValue(undefined) },
+      {
+        now: () => current,
+        readiness: async () => ({ ready: true, detail: "ready" }),
+        cancellationWatchPollMs: 30_000,
+      },
+    );
+
+    await scheduler.runTarget(stored);
+    await scheduler.runTarget(stored);
+    current += 30_000;
+    await scheduler.runTarget(stored);
+
+    expect(runOnce).toHaveBeenCalledTimes(2);
+  });
+
+  it("pauses a cancellation watcher at its configured stop time", async () => {
+    const directory = await tempDirectory();
+    const store = new FileTargetStore({ directory });
+    const stored = await store.save(
+      {
+        target: makeTarget({
+          mode: "cancellation-watch",
+          cancellationWatchStopAt: "2026-10-01T12:00:00.000Z",
+        }),
+        state: TargetState.ARMED,
+        version: 0,
+        createdAt: "2026-10-01T00:00:00.000Z",
+        updatedAt: "2026-10-01T00:00:00.000Z",
+      },
+      0,
+    );
+    const scheduler = new ReservationScheduler(
+      { runOnce: vi.fn() },
+      { checkAuthentication: vi.fn().mockResolvedValue({ authenticated: true }) },
+      store,
+      { notify: vi.fn().mockResolvedValue(undefined) },
+      { now: () => Date.parse("2026-10-01T12:00:01.000Z") },
+    );
+
+    await scheduler.runTarget(stored);
+
+    expect((await store.get("target-1"))?.state).toBe(TargetState.PAUSED);
+  });
+
+  it("leaves a cancellation watcher armed when readiness is temporarily unavailable", async () => {
+    const directory = await tempDirectory();
+    const store = new FileTargetStore({ directory });
+    const stored = await store.save(
+      {
+        target: makeTarget({
+          mode: "cancellation-watch",
+          dateRange: { startDate: "2026-10-02", endDate: "2026-10-02" },
+          cancellationWatchStopAt: "2026-10-01T13:00:00.000Z",
+        }),
+        state: TargetState.ARMED,
+        version: 0,
+        createdAt: "2026-10-01T00:00:00.000Z",
+        updatedAt: "2026-10-01T00:00:00.000Z",
+      },
+      0,
+    );
+    const scheduler = new ReservationScheduler(
+      { runOnce: vi.fn() },
+      { checkAuthentication: vi.fn().mockResolvedValue({ authenticated: false }) },
+      store,
+      { notify: vi.fn().mockResolvedValue(undefined) },
+      {
+        now: () => Date.parse("2026-10-01T12:00:00.000Z"),
+        readiness: async () => ({ ready: false, detail: "session not authenticated" }),
+      },
+    );
+
+    await scheduler.runTarget(stored);
+
+    expect((await store.get("target-1"))?.state).toBe(TargetState.ARMED);
+  });
 });

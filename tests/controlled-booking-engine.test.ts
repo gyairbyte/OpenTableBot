@@ -17,7 +17,14 @@ import type {
   BookingPreview,
   ReservationSlot,
 } from "../src/domain/reservation-slot.js";
-import { TargetState } from "../src/domain/target-state.js";
+import {
+  RUNNABLE_TARGET_STATES,
+  TargetState,
+} from "../src/domain/target-state.js";
+import {
+  AdapterFailureCategory,
+  OpenTableAdapterError,
+} from "../src/opentable/errors.js";
 import type { Notification } from "../src/notifications/notifier.js";
 import { FileTargetStore } from "../src/storage/file-target-store.js";
 import type { TargetRecord } from "../src/storage/target-store.js";
@@ -111,6 +118,19 @@ async function seed(
     },
     0,
   );
+}
+
+async function seedWatcher(
+  store: FileTargetStore,
+  overrides: Partial<TargetRecord> = {},
+): Promise<void> {
+  await seed(store, {
+    target: makeTarget({
+      mode: "cancellation-watch",
+      cancellationWatchStopAt: "2026-10-01T23:00:00.000Z",
+    }),
+    ...overrides,
+  });
 }
 
 function recordingNotifier(events: Notification[]) {
@@ -434,5 +454,202 @@ describe("ControlledBookingEngine", () => {
     const record = await store.get("target-1");
     expect(record?.state).toBe("PAUSED");
     expect(record?.pauseReason).toContain("bridge unavailable");
+  });
+
+  it("keeps a cancellation watcher armed when the window holds no acceptable time", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seedWatcher(store);
+    const adapter = bookingAdapter({
+      findSlotsDetailed: vi
+        .fn<(target: BookingTarget) => Promise<DetailedAvailability>>()
+        .mockResolvedValue(
+          detailed(
+            [makeSlot({ localTime: "21:30" })],
+            [observed({ localTime: "21:30", withinWindow: false })],
+          ),
+        ),
+    });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: true },
+    );
+
+    await engine.runOnce("target-1");
+
+    const record = await store.get("target-1");
+    expect(record?.state).toBe(TargetState.ARMED);
+    expect(record?.pauseReason).toBeUndefined();
+    expect(record?.availabilityDetail?.matched).toBe(false);
+    expect(adapter.authorizeBooking).not.toHaveBeenCalled();
+  });
+
+  it("books the acceptable cancellation-watch time closest to the preferred one", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seedWatcher(store);
+    const closest = makePreview({ slotId: "closest", localTime: "19:15" });
+    const adapter = bookingAdapter({
+      findSlotsDetailed: vi
+        .fn<(target: BookingTarget) => Promise<DetailedAvailability>>()
+        .mockResolvedValue(
+          detailed([
+            makeSlot({ id: "earliest", localTime: "18:00" }),
+            makeSlot({ id: "closest", localTime: "19:15" }),
+          ]),
+        ),
+      getBookingPreview: vi.fn().mockResolvedValue(closest),
+      prepareBooking: vi.fn().mockResolvedValue({
+        preview: closest,
+        bookingHandle: "00000000-0000-4000-8000-000000000010",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      }),
+    });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: true },
+    );
+
+    await engine.runOnce("target-1");
+
+    expect((await store.get("target-1"))?.state).toBe(TargetState.BOOKED);
+    expect(adapter.getBookingPreview).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: "closest" }),
+    );
+  });
+
+  it("keeps a cancellation watcher armed after a dry-run scan", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seedWatcher(store);
+    const adapter = bookingAdapter();
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: false },
+    );
+
+    await engine.runOnce("target-1");
+
+    const record = await store.get("target-1");
+    expect(record?.state).toBe(TargetState.ARMED);
+    expect(record?.availabilityDetail?.matched).toBe(true);
+    expect(adapter.authorizeBooking).not.toHaveBeenCalled();
+    expect(adapter.book).not.toHaveBeenCalled();
+  });
+
+  it("resumes watching after a retryable failure while locking", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seedWatcher(store);
+    const adapter = bookingAdapter({
+      prepareBooking: vi.fn().mockRejectedValue(
+        new OpenTableAdapterError(
+          AdapterFailureCategory.LOCK_NOT_DISPATCHED,
+          "the lock request never left the page",
+        ),
+      ),
+    });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: true },
+    );
+
+    await engine.runOnce("target-1");
+
+    const record = await store.get("target-1");
+    expect(record?.state).toBe(TargetState.ARMED);
+    expect(record?.pauseReason).toBeUndefined();
+    // A stranded mid-flight state would silently drop the target out of the
+    // scheduler's runnable set, ending the watch with no pause and no notice.
+    expect(RUNNABLE_TARGET_STATES).toContain(record?.state);
+    expect(adapter.book).not.toHaveBeenCalled();
+  });
+
+  it("pauses a cancellation watcher when a submission fails ambiguously", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seedWatcher(store);
+    const adapter = bookingAdapter({
+      book: vi.fn().mockRejectedValue(
+        new OpenTableAdapterError(
+          AdapterFailureCategory.TRANSIENT_TRANSPORT,
+          "the bridge dropped mid-submit",
+        ),
+      ),
+    });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: true },
+    );
+
+    await engine.runOnce("target-1");
+
+    const record = await store.get("target-1");
+    expect(record?.state).toBe(TargetState.PAUSED);
+    expect(record?.pauseReason).toContain("TRANSIENT_TRANSPORT");
+    expect(adapter.book).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes watching after a retryable availability failure", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seedWatcher(store);
+    const adapter = bookingAdapter({
+      findSlotsDetailed: vi.fn().mockRejectedValue(
+        new OpenTableAdapterError(
+          AdapterFailureCategory.RATE_LIMITED,
+          "slow down",
+        ),
+      ),
+    });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: true },
+    );
+
+    await engine.runOnce("target-1");
+
+    expect((await store.get("target-1"))?.state).toBe(TargetState.ARMED);
+  });
+
+  it("pauses a cancellation watcher on a failure that needs a human", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seedWatcher(store);
+    const adapter = bookingAdapter({
+      findSlotsDetailed: vi.fn().mockRejectedValue(
+        new OpenTableAdapterError(
+          AdapterFailureCategory.AUTHENTICATION_REQUIRED,
+          "sign-in required",
+        ),
+      ),
+    });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: true },
+    );
+
+    await engine.runOnce("target-1");
+
+    const record = await store.get("target-1");
+    expect(record?.state).toBe(TargetState.PAUSED);
+    expect(record?.pauseReason).toContain("AUTHENTICATION_REQUIRED");
+  });
+
+  it("still pauses a known-drop target when a retryable failure interrupts locking", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seed(store);
+    const adapter = bookingAdapter({
+      prepareBooking: vi.fn().mockRejectedValue(
+        new OpenTableAdapterError(
+          AdapterFailureCategory.LOCK_NOT_DISPATCHED,
+          "the lock request never left the page",
+        ),
+      ),
+    });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: true },
+    );
+
+    await engine.runOnce("target-1");
+
+    const record = await store.get("target-1");
+    expect(record?.state).toBe(TargetState.PAUSED);
+    expect(record?.pauseReason).toContain("LOCK_NOT_DISPATCHED");
   });
 });

@@ -38,7 +38,7 @@ export const allowedTargetTransitions: Readonly<
 > = {
   DRAFT: [TargetState.ARMED],
   ARMED: [TargetState.WAITING, TargetState.PAUSED],
-  WAITING: [TargetState.MATCH_FOUND, TargetState.PAUSED],
+  WAITING: [TargetState.MATCH_FOUND, TargetState.PAUSED, TargetState.ARMED],
   MATCH_FOUND: [TargetState.VALIDATING, TargetState.WAITING, TargetState.PAUSED],
   VALIDATING: [TargetState.LOCKING, TargetState.BOOKING, TargetState.WAITING, TargetState.PAUSED],
   LOCKING: [TargetState.LOCKED, TargetState.SLOT_LOST, TargetState.PAUSED],

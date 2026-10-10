@@ -4,7 +4,15 @@ Phase 4 adds a bounded known-drop scheduler. You describe a target (restaurant,
 date, party, exact preferred time, and the release time), and the scheduler warms
 up before the release, waits for the drop, and makes exactly one attempt.
 
+The same scheduler also runs cancellation watchers, which poll for an opening
+instead of waiting for a release. See
+[Watching for cancellations](#watching-for-cancellations).
+
 ## What the scheduler does and does not do
+
+These rules describe a `known-drop` target. A `cancellation-watch` target
+deliberately relaxes the first two, and only those two; see
+[Watching for cancellations](#watching-for-cancellations).
 
 - It selects **only** a slot at the target's exact `timeWindow.preferred` time.
   If that time is absent, it pauses the target and notifies instead of taking a
@@ -113,12 +121,46 @@ Options:
 - `--availability-retry-delay-ms <n>` delay between those lookups in
   milliseconds (default 250).
 
-The scheduler warms up before `knownReservationReleaseAt`, polling readiness
-until the extension and an eligible page are both available, then waits for the
-release time and runs once. If the exact preferred time is absent, it can make
-the configured bounded number of additional availability lookups. It never
-substitutes a nearby time. If readiness never arrives or all availability
-attempts miss, the target is paused with the failure detail rather than run.
+For `known-drop` targets, the scheduler warms up before
+`knownReservationReleaseAt`, polls readiness until the extension and an
+eligible page are available, then waits for the release time and runs once. If
+the exact preferred time is absent, it can make the configured bounded number
+of additional availability lookups. It never substitutes a nearby time.
+
+### Watching for cancellations
+
+A `cancellation-watch` target is the opposite shape: instead of one attempt at a
+known moment, it keeps looking for a table that someone else gives up.
+
+The scheduler checks every 30 seconds while the process keeps running. It
+accepts any acceptable time inside the target's earliest/latest window and
+takes the one closest to `timeWindow.preferred`, so a 19:15 opening wins over an
+18:00 one when 19:00 was asked for. It books by itself only in Live mode and
+only when the same fail-closed booking policy authorizes the exact terms, which
+is the identical gate a known drop passes through.
+
+A watcher keeps watching, staying `ARMED`, when:
+
+- a scan finds nothing acceptable, which is the normal case;
+- the browser is momentarily unavailable, since a closed tab or a resuming
+  machine must not end an hours-long watch;
+- a retryable failure (rate limiting, a dropped transport, a lock that was
+  never dispatched) interrupts a scan or a lock attempt.
+
+A watcher stops when:
+
+- a booking is confirmed, which is terminal `BOOKED`;
+- its restaurant-local `cancellationWatchStopAt` time arrives, or the
+  reservation date passes in the restaurant's timezone;
+- anything needing a human appears, such as a challenge, a sign-out, or a
+  policy rejection, which pauses it with the reason;
+- a submission fails ambiguously. The reservation may exist, so the watcher
+  pauses for inspection rather than risk booking the same table twice.
+
+Dry Run watchers keep scanning without locking or submitting, so they can be
+left running to confirm what the watcher would have taken. Each poll stores its
+availability detail on the target, which means the console always shows what
+the most recent scan actually saw.
 
 ## Operator console
 
@@ -164,7 +206,8 @@ The console lets you:
   at it;
 - create a task from the same `BookingTarget` fields the state file uses,
   including the dining-area policy, the fail-closed booking policy, and
-  `knownReservationReleaseAt`, saved as `DRAFT` or `ARMED`;
+  `knownReservationReleaseAt` or the cancellation-watch stop time, saved as
+  `DRAFT` or `ARMED`;
 - run a runnable task immediately with the current Live or Dry Run mode, or
   register the Windows wake task directly from the table. The Windows action
   uses the restaurant profile URL captured from search, or asks for it when an
