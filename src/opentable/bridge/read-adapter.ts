@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+import type {
+  DetailedAvailability,
+  ObservedAvailabilitySlot,
+} from "../../domain/availability-detail.js";
 import type { BookingTarget } from "../../domain/booking-target.js";
 import type {
   BookingPreview,
@@ -156,6 +160,12 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
   }
 
   async findSlots(target: BookingTarget): Promise<readonly ReservationSlot[]> {
+    return (await this.findSlotsDetailed(target)).acceptableSlots;
+  }
+
+  async findSlotsDetailed(
+    target: BookingTarget,
+  ): Promise<DetailedAvailability> {
     const authentication = await this.checkAuthentication();
     if (!authentication.authenticated) {
       throw new OpenTableAdapterError(
@@ -167,6 +177,30 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
     }
 
     const normalizedSlots: ReservationSlot[] = [];
+    const observedSlots = new Map<string, ObservedAvailabilitySlot & {
+      diningAreas: string[];
+    }>();
+    const observeSlot = (
+      slot: ReservationSlot,
+      rejectionReasons: readonly SlotRejectionReason[],
+    ): ObservedAvailabilitySlot & { diningAreas: string[] } => {
+      const key = `${slot.localDate}|${slot.localTime}|${slot.seatingType}|${slot.reservationKind.kind}`;
+      const existing = observedSlots.get(key);
+      if (existing !== undefined) return existing;
+      const observation: ObservedAvailabilitySlot & { diningAreas: string[] } = {
+        localDate: slot.localDate,
+        localTime: slot.localTime,
+        seatingType: slot.seatingType,
+        reservationKind: slot.reservationKind.kind,
+        withinWindow: !rejectionReasons.includes(
+          SlotRejectionReason.TIME_OUTSIDE_WINDOW,
+        ),
+        rejectionReasons,
+        diningAreas: [],
+      };
+      observedSlots.set(key, observation);
+      return observation;
+    };
     for (const requestedDate of datesInRange(target.dateRange.startDate, target.dateRange.endDate)) {
       let result: FindSlotsResult;
       try {
@@ -197,6 +231,7 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
         const baseRejections = getSlotRejectionReasons(target, slot).filter(
           (reason) => reason !== SlotRejectionReason.SEATING_NOT_ALLOWED,
         );
+        const observation = observeSlot(slot, baseRejections);
         if (baseRejections.length > 0) {
           this.options.onDiagnostic?.(
             `Slot ${slot.localDate} ${slot.localTime} ${slot.seatingType} rejected before dining-area discovery: ${baseRejections.join(", ")}`,
@@ -244,6 +279,9 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
           };
           if (isSlotAcceptable(target, exactCandidate)) {
             normalizedSlots.push(exactCandidate);
+            if (!observation.diningAreas.includes(candidate.diningArea.label)) {
+              observation.diningAreas.push(candidate.diningArea.label);
+            }
           }
         }
       }
@@ -251,7 +289,15 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
         this.options.onDiagnostic?.(`Unknown seating label normalized to other: ${diagnostic.label}`);
       }
     }
-    return [...new Map(normalizedSlots.map((slot) => [slot.id, slot])).values()];
+    return {
+      acceptableSlots: [
+        ...new Map(normalizedSlots.map((slot) => [slot.id, slot])).values(),
+      ],
+      observedSlots: [...observedSlots.values()].map((observation) => ({
+        ...observation,
+        diningAreas: [...observation.diningAreas],
+      })),
+    };
   }
 
   async getBookingPreview(

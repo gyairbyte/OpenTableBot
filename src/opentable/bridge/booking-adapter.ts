@@ -102,6 +102,7 @@ export class BrowserBridgeOpenTableBookingAdapter implements OpenTableBookingAda
   close(): Promise<void> { return this.read.close(); }
   checkAuthentication(): Promise<AuthenticationStatus> { return this.read.checkAuthentication(); }
   findSlots(target: BookingTarget): Promise<readonly ReservationSlot[]> { return this.read.findSlots(target); }
+  findSlotsDetailed(target: BookingTarget) { return this.read.findSlotsDetailed(target); }
   searchRestaurants(query: RestaurantSearchQuery): Promise<SafeSearchResults> {
     return this.read.searchRestaurants(query);
   }
