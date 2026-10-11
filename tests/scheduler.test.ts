@@ -304,4 +304,130 @@ describe("ReservationScheduler", () => {
 
     expect((await store.get("target-1"))?.state).toBe(TargetState.ARMED);
   });
+
+  describe("watcher blind alert", () => {
+    async function watcherSetup(
+      runOnce: (id: string, store: FileTargetStore) => Promise<void>,
+      readiness: () => Promise<{ ready: boolean; detail: string }>,
+    ) {
+      const store = new FileTargetStore({ directory: await tempDirectory() });
+      const stored = await store.save(
+        {
+          target: makeTarget({
+            mode: "cancellation-watch",
+            dateRange: { startDate: "2026-10-02", endDate: "2026-10-02" },
+            cancellationWatchStopAt: "2026-10-01T23:00:00.000Z",
+          }),
+          state: TargetState.ARMED,
+          version: 0,
+          createdAt: "2026-10-01T00:00:00.000Z",
+          updatedAt: "2026-10-01T00:00:00.000Z",
+        },
+        0,
+      );
+      let current = Date.parse("2026-10-01T12:00:00.000Z");
+      const notify = vi.fn().mockResolvedValue(undefined);
+      const scheduler = new ReservationScheduler(
+        { runOnce: (id) => runOnce(id, store) },
+        { checkAuthentication: vi.fn() },
+        store,
+        { notify },
+        {
+          now: () => current,
+          readiness,
+          cancellationWatchPollMs: 30_000,
+          watcherBlindAlertMs: 600_000,
+        },
+      );
+      return {
+        stored,
+        notify,
+        scheduler,
+        advance: (ms: number) => {
+          current += ms;
+        },
+      };
+    }
+
+    it("alerts once the browser has been unready past the threshold, then recovers", async () => {
+      let ready = false;
+      const runOnce = vi.fn().mockResolvedValue(undefined);
+      const { stored, notify, scheduler, advance } = await watcherSetup(runOnce, async () => ({
+        ready,
+        detail: "no eligible OpenTable page",
+      }));
+
+      await scheduler.runTarget(stored);
+      advance(300_000);
+      await scheduler.runTarget(stored);
+      expect(notify).not.toHaveBeenCalled();
+
+      advance(300_000);
+      await scheduler.runTarget(stored);
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(notify).toHaveBeenLastCalledWith({
+        type: "watcher-blind",
+        targetId: "target-1",
+        reason: "Browser not ready (no eligible OpenTable page)",
+        blindForMs: 600_000,
+      });
+
+      // No repeat inside the same alert interval.
+      advance(60_000);
+      await scheduler.runTarget(stored);
+      expect(notify).toHaveBeenCalledTimes(1);
+
+      ready = true;
+      advance(30_000);
+      await scheduler.runTarget(stored);
+      expect(runOnce).toHaveBeenCalledTimes(1);
+      expect(notify).toHaveBeenLastCalledWith({
+        type: "watcher-recovered",
+        targetId: "target-1",
+        blindForMs: 690_000,
+      });
+    });
+
+    it("alerts when polls run but the engine keeps failing to scan", async () => {
+      const { stored, notify, scheduler, advance } = await watcherSetup(
+        // Emulates the engine resuming a watch it could not scan.
+        async (id, store) => {
+          const current = await store.get(id);
+          if (current === undefined) throw new Error("missing");
+          await store.save(
+            { ...current, scanBlockedReason: "BROWSER_NOT_READY: not observed" },
+            current.version,
+          );
+        },
+        async () => ({ ready: true, detail: "ready" }),
+      );
+
+      for (let poll = 0; poll <= 20; poll += 1) {
+        await scheduler.runTarget(stored);
+        advance(30_000);
+      }
+
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "watcher-blind",
+          reason: "BROWSER_NOT_READY: not observed",
+        }),
+      );
+    });
+
+    it("does not alert for a healthy watcher", async () => {
+      const { stored, notify, scheduler, advance } = await watcherSetup(
+        async () => undefined,
+        async () => ({ ready: true, detail: "ready" }),
+      );
+
+      for (let poll = 0; poll < 30; poll += 1) {
+        await scheduler.runTarget(stored);
+        advance(30_000);
+      }
+
+      expect(notify).not.toHaveBeenCalled();
+    });
+  });
 });

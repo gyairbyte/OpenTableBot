@@ -145,7 +145,10 @@ A watcher keeps watching, staying `ARMED`, when:
 - the browser is momentarily unavailable, since a closed tab or a resuming
   machine must not end an hours-long watch;
 - a retryable failure (rate limiting, a dropped transport, a lock that was
-  never dispatched) interrupts a scan or a lock attempt.
+  never dispatched) interrupts a scan or a lock attempt;
+- the browser page is not ready: no eligible OpenTable page is bound, or the
+  restaurant page has not yet made the availability request the extension
+  replays (a reloaded or wrong tab). A known-drop target still pauses on these.
 
 A watcher stops when:
 
@@ -156,6 +159,15 @@ A watcher stops when:
   policy rejection, which pauses it with the reason;
 - a submission fails ambiguously. The reservation may exist, so the watcher
   pauses for inspection rather than risk booking the same table twice.
+
+A watcher that stays armed but cannot scan is not silently watching nothing.
+When a poll is skipped because the browser is not ready, or the engine resumed
+the watch without completing a scan, the scheduler tracks how long it has been
+blind. After 10 minutes it emits a `watcher-blind` notification with the reason,
+repeated every 10 minutes while it stays blind, and a `watcher-recovered`
+notification once a scan completes. The console shows the last reason under the
+task as "Could not scan on the last poll". Notifications go to the local log
+only (`.local/logs/notifications.log`); nothing is pushed off the machine.
 
 Dry Run watchers keep scanning without locking or submitting, so they can be
 left running to confirm what the watcher would have taken. Each poll stores its

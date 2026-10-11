@@ -607,6 +607,77 @@ describe("ControlledBookingEngine", () => {
     expect((await store.get("target-1"))?.state).toBe(TargetState.ARMED);
   });
 
+  it("keeps a watcher armed and records why when the browser page is not ready", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seedWatcher(store);
+    const findSlotsDetailed = vi.fn().mockRejectedValue(
+      new OpenTableAdapterError(
+        AdapterFailureCategory.BROWSER_NOT_READY,
+        "The RestaurantsAvailability operation has not been observed on this page",
+      ),
+    );
+    const adapter = bookingAdapter({ findSlotsDetailed });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: true },
+    );
+
+    await engine.runOnce("target-1");
+
+    const record = await store.get("target-1");
+    expect(record?.state).toBe(TargetState.ARMED);
+    expect(record?.scanBlockedReason).toContain("BROWSER_NOT_READY");
+    expect(record?.scanBlockedReason).toContain("has not been observed");
+
+    // The next run that can scan clears the reason.
+    findSlotsDetailed.mockResolvedValue(detailed([]));
+    await engine.runOnce("target-1");
+    const recovered = await store.get("target-1");
+    expect(recovered?.state).toBe(TargetState.ARMED);
+    expect(recovered?.scanBlockedReason).toBeUndefined();
+  });
+
+  it("does not call a vanished slot a blind scan", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seedWatcher(store);
+    const adapter = bookingAdapter({
+      prepareBooking: vi.fn().mockRejectedValue(
+        new OpenTableAdapterError(
+          AdapterFailureCategory.SLOT_DISAPPEARED,
+          "someone else took it",
+        ),
+      ),
+    });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: true },
+    );
+
+    await engine.runOnce("target-1");
+
+    const record = await store.get("target-1");
+    expect(record?.state).toBe(TargetState.ARMED);
+    expect(record?.scanBlockedReason).toBeUndefined();
+  });
+
+  it("still pauses a known-drop target when the browser page is not ready", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seed(store);
+    const adapter = bookingAdapter({
+      findSlotsDetailed: vi.fn().mockRejectedValue(
+        new OpenTableAdapterError(AdapterFailureCategory.BROWSER_NOT_READY, "no page"),
+      ),
+    });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: true },
+    );
+
+    await engine.runOnce("target-1");
+
+    expect((await store.get("target-1"))?.state).toBe(TargetState.PAUSED);
+  });
+
   it("pauses a cancellation watcher on a failure that needs a human", async () => {
     const store = new FileTargetStore({ directory: await tempDirectory() });
     await seedWatcher(store);

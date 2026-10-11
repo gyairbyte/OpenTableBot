@@ -18,6 +18,12 @@ export interface ReservationSchedulerOptions {
   /** Minimum interval between cancellation-watch availability checks. */
   readonly cancellationWatchPollMs?: number;
   /**
+   * How long a watcher may go without completing a scan before a
+   * `watcher-blind` alert is raised, then repeated at the same interval while
+   * it stays blind. Default 10 minutes.
+   */
+  readonly watcherBlindAlertMs?: number;
+  /**
    * Full readiness probe: the browser session must be usable, not merely
    * signed in. When supplied, the scheduler refuses to start a run against a
    * browser that never became ready instead of failing inside the engine.
@@ -30,6 +36,7 @@ export interface ReservationSchedulerOptions {
 const DEFAULT_WARM_UP_LEAD_MS = 60_000;
 const DEFAULT_READINESS_POLL_MS = 5_000;
 const DEFAULT_CANCELLATION_WATCH_POLL_MS = 30_000;
+const DEFAULT_WATCHER_BLIND_ALERT_MS = 10 * 60_000;
 
 function localDateInTimeZone(now: number, timeZone: string): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -68,6 +75,12 @@ export class ReservationScheduler {
   private readonly readiness: (() => Promise<SchedulerReadiness>) | undefined;
   private readonly cancellationWatchPollMs: number;
   private readonly lastCancellationWatchAt = new Map<string, number>();
+  private readonly watcherBlindAlertMs: number;
+  /** Per watcher: when it stopped scanning, and when it was last alerted. */
+  private readonly blindWatchers = new Map<
+    string,
+    { readonly since: number; lastAlertAt: number | undefined }
+  >();
 
   constructor(
     private readonly engine: BookingEngine,
@@ -82,6 +95,8 @@ export class ReservationScheduler {
     this.readiness = options.readiness;
     this.cancellationWatchPollMs =
       options.cancellationWatchPollMs ?? DEFAULT_CANCELLATION_WATCH_POLL_MS;
+    this.watcherBlindAlertMs =
+      options.watcherBlindAlertMs ?? DEFAULT_WATCHER_BLIND_ALERT_MS;
     this.sleep =
       options.sleep ??
       ((milliseconds) =>
@@ -158,10 +173,12 @@ export class ReservationScheduler {
       ? undefined
       : Date.parse(target.cancellationWatchStopAt);
     if (stopAt !== undefined && (Number.isNaN(stopAt) || now >= stopAt)) {
+      this.blindWatchers.delete(target.id);
       await this.pause(record, "Cancellation watcher reached its configured stop time");
       return;
     }
     if (localDateInTimeZone(now, target.restaurant.timeZone) > target.dateRange.endDate) {
+      this.blindWatchers.delete(target.id);
       await this.pause(record, "Cancellation watcher passed the target date");
       return;
     }
@@ -171,9 +188,58 @@ export class ReservationScheduler {
     // (a closed tab, a reloading extension, a machine resuming from sleep) has
     // to be survivable. Skipping this poll leaves the target armed for the
     // next one; pausing here would silently end the watch instead.
-    if (!(await this.probeReadiness()).ready) return;
+    const readiness = await this.probeReadiness();
+    if (!readiness.ready) {
+      await this.noteBlind(target.id, now, `Browser not ready (${readiness.detail})`);
+      return;
+    }
     this.lastCancellationWatchAt.set(target.id, now);
     await this.engine.runOnce(target.id);
+    // The engine clears the reason at the start of a run and sets it again only
+    // when it resumed the watch without completing a scan.
+    const after = await this.store.get(target.id);
+    if (after?.scanBlockedReason !== undefined) {
+      await this.noteBlind(target.id, now, after.scanBlockedReason);
+    } else if (after !== undefined && after.state !== TargetState.PAUSED) {
+      await this.noteScanned(target.id, now);
+    } else {
+      this.blindWatchers.delete(target.id);
+    }
+  }
+
+  /**
+   * A skipped or blind poll is survivable, but a watcher that stays blind is
+   * silently watching nothing. Raise an alert once it has been blind for the
+   * configured time, and repeat at that interval until it recovers.
+   */
+  private async noteBlind(targetId: string, now: number, reason: string): Promise<void> {
+    const entry = this.blindWatchers.get(targetId) ?? {
+      since: now,
+      lastAlertAt: undefined,
+    };
+    this.blindWatchers.set(targetId, entry);
+    const lastAlert = entry.lastAlertAt ?? entry.since;
+    if (now - lastAlert < this.watcherBlindAlertMs) return;
+    entry.lastAlertAt = now;
+    await this.notifier.notify({
+      type: "watcher-blind",
+      targetId,
+      reason,
+      blindForMs: now - entry.since,
+    });
+  }
+
+  private async noteScanned(targetId: string, now: number): Promise<void> {
+    const entry = this.blindWatchers.get(targetId);
+    if (entry === undefined) return;
+    this.blindWatchers.delete(targetId);
+    // Recovery only matters to someone who was told the watcher was blind.
+    if (entry.lastAlertAt === undefined) return;
+    await this.notifier.notify({
+      type: "watcher-recovered",
+      targetId,
+      blindForMs: now - entry.since,
+    });
   }
 
   private async probeReadiness(): Promise<SchedulerReadiness> {

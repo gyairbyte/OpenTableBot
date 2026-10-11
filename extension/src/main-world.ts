@@ -5,6 +5,7 @@ import {
   remainingOperationMs,
   type LockTelemetryStage,
 } from "../../src/opentable/bridge/lock-lifecycle.js";
+import { AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE } from "../../src/opentable/bridge/page-errors.js";
 import {
   normalizeDiningAreaCategory,
   sanitizeDiningAreaLabel,
@@ -825,7 +826,7 @@ async function executeCapturedAvailability(
 ): Promise<unknown> {
   const template = selectAvailabilityFetchTemplate(variables);
   if (template === undefined) {
-    throw new Error("The RestaurantsAvailability operation has not been observed on this page");
+    throw new Error(AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE);
   }
   const capturedVariables = isRecord(template.operation.variables)
     ? template.operation.variables

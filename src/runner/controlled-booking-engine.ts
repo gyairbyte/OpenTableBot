@@ -10,6 +10,7 @@ import {
   canTransitionTarget,
 } from "../domain/target-state.js";
 import {
+  AdapterFailureCategory,
   AdapterFailureDisposition,
   OpenTableAdapterError,
 } from "../opentable/errors.js";
@@ -188,7 +189,15 @@ export class ControlledBookingEngine implements BookingEngine {
         error instanceof OpenTableAdapterError &&
         error.disposition === AdapterFailureDisposition.RETRY_WAITING &&
         current.state !== TargetState.SUBMITTING &&
-        (await resumeWatching())
+        (await resumeWatching(
+          // A slot that vanished or a lock that never dispatched happens after
+          // a successful scan, so only the other retryable failures mean the
+          // watcher could not see availability at all.
+          error.category === AdapterFailureCategory.SLOT_DISAPPEARED ||
+            error.category === AdapterFailureCategory.LOCK_NOT_DISPATCHED
+            ? {}
+            : { scanBlockedReason: describeFailure(error) },
+        ))
       ) {
         return;
       }
@@ -200,7 +209,10 @@ export class ControlledBookingEngine implements BookingEngine {
     // this run's evidence. A target that is already waiting skips the
     // redundant self-transition.
     if (current.state !== TargetState.WAITING) {
-      await move(TargetState.WAITING, { availabilityDetail: undefined });
+      await move(TargetState.WAITING, {
+        availabilityDetail: undefined,
+        scanBlockedReason: undefined,
+      });
     }
 
     const availabilityAttempts = this.options.availabilityAttempts ?? 1;
