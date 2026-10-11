@@ -21,6 +21,7 @@ export const AdapterFailureCategory = {
   INVARIANT_MISMATCH: "INVARIANT_MISMATCH",
   MALFORMED_RESPONSE: "MALFORMED_RESPONSE",
   UNEXPECTED_RESPONSE: "UNEXPECTED_RESPONSE",
+  BROWSER_NOT_READY: "BROWSER_NOT_READY",
   UNKNOWN: "UNKNOWN",
 } as const;
 
@@ -40,6 +41,7 @@ const retryableCategories: ReadonlySet<AdapterFailureCategory> = new Set([
   AdapterFailureCategory.SLOT_DISAPPEARED,
   AdapterFailureCategory.LOCK_NOT_DISPATCHED,
   AdapterFailureCategory.TRANSIENT_TRANSPORT,
+  AdapterFailureCategory.BROWSER_NOT_READY,
 ]);
 
 export function dispositionForAdapterFailure(

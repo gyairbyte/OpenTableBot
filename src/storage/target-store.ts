@@ -18,6 +18,12 @@ export interface TargetRecord {
    * undefined is how the engine removes the key on its first save).
    */
   readonly availabilityDetail?: AvailabilityRunDetail | undefined;
+  /**
+   * Why the most recent watcher run could not scan (for example the browser
+   * page was not ready) while the watcher stayed armed. Cleared at the start
+   * of each run, so its presence after a run means that run was blind.
+   */
+  readonly scanBlockedReason?: string | undefined;
 }
 
 export interface TargetStore {

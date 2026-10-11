@@ -567,6 +567,9 @@ function renderTargets(targets) {
     else if (record.pauseReason) detail = record.pauseReason;
     var detailCell = el("td");
     if (detail) detailCell.appendChild(el("div", detail));
+    if (record.scanBlockedReason) {
+      detailCell.appendChild(el("div", "Could not scan on the last poll: " + record.scanBlockedReason));
+    }
     if (record.availabilityDetail) {
       detailCell.appendChild(availabilityDetailWidget(record.availabilityDetail));
     }

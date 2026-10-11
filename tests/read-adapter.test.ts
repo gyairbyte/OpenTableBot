@@ -3,6 +3,8 @@ import type { AuthenticationStatus, OpenTableReadAdapter } from "../src/opentabl
 import { AdapterFailureCategory, type OpenTableAdapterError } from "../src/opentable/errors.js";
 import type { OpenTableBridgeClientPort } from "../src/opentable/bridge/read-adapter.js";
 import { BrowserBridgeOpenTableReadAdapter } from "../src/opentable/bridge/read-adapter.js";
+import { BridgeClientError } from "../src/opentable/bridge/client.js";
+import { AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE } from "../src/opentable/bridge/page-errors.js";
 import type {
   FindSlotsResult,
   GetBookingPreviewResult,
@@ -161,6 +163,28 @@ describe("BrowserBridgeOpenTableReadAdapter", () => {
     await expect(adapter.findSlots(makeTarget())).rejects.toMatchObject({
       category: AdapterFailureCategory.AUTHENTICATION_REQUIRED,
     });
+  });
+
+  it.each([
+    ["PAGE_NOT_READY", "No eligible OpenTable page is ready", AdapterFailureCategory.BROWSER_NOT_READY],
+    [
+      "PAGE_OPERATION_UNAVAILABLE",
+      AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE,
+      AdapterFailureCategory.BROWSER_NOT_READY,
+    ],
+    [
+      "PAGE_OPERATION_UNAVAILABLE",
+      "Availability request failed validation",
+      AdapterFailureCategory.UNEXPECTED_RESPONSE,
+    ],
+  ] as const)("maps %s (%s) to %s", async (code, message, category) => {
+    class FailingClient extends FakeBridgeClient {
+      override async findSlots(): Promise<FindSlotsResult> {
+        throw new BridgeClientError(code, message);
+      }
+    }
+    const adapter = new BrowserBridgeOpenTableReadAdapter(new FailingClient());
+    await expect(adapter.findSlots(makeTarget())).rejects.toMatchObject({ category });
   });
 
   it("retrieves a read-only preview without implementing prepare or book", async () => {

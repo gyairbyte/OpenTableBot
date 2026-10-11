@@ -26,6 +26,7 @@ import {
   SlotRejectionReason,
 } from "../../domain/slot-matcher.js";
 import { BridgeClientError, type OpenTableBridgeClient } from "./client.js";
+import { AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE } from "./page-errors.js";
 import type {
   FindSlotsResult,
   GetBookingPreviewResult,
@@ -110,9 +111,11 @@ export function mapBridgeError(error: unknown): never {
             : error.code === "EXTENSION_UNAVAILABLE" || error.code === "DEADLINE_EXCEEDED"
       ? AdapterFailureCategory.TRANSIENT_TRANSPORT
       : error.code === "PAGE_NOT_READY"
-        ? AdapterFailureCategory.UNEXPECTED_RESPONSE
+        ? AdapterFailureCategory.BROWSER_NOT_READY
         : error.code === "PAGE_OPERATION_UNAVAILABLE"
-          ? AdapterFailureCategory.UNEXPECTED_RESPONSE
+          ? error.message.includes(AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE)
+            ? AdapterFailureCategory.BROWSER_NOT_READY
+            : AdapterFailureCategory.UNEXPECTED_RESPONSE
               : AdapterFailureCategory.UNKNOWN;
   throw new OpenTableAdapterError(category, error.message, { cause: error });
 }

@@ -13,6 +13,18 @@ export type Notification =
       readonly reason: string;
     }
   | {
+      /** A watcher has been unable to scan for longer than the alert threshold. */
+      readonly type: "watcher-blind";
+      readonly targetId: string;
+      readonly reason: string;
+      readonly blindForMs: number;
+    }
+  | {
+      readonly type: "watcher-recovered";
+      readonly targetId: string;
+      readonly blindForMs: number;
+    }
+  | {
       readonly type: "state-changed";
       readonly targetId: string;
       readonly from: TargetState;

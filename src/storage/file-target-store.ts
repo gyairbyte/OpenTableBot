@@ -20,6 +20,7 @@ const storedRecordSchema = z.strictObject({
   pauseReason: z.string().min(1).optional(),
   confirmation: BookingConfirmationSchema.optional(),
   availabilityDetail: AvailabilityRunDetailSchema.optional(),
+  scanBlockedReason: z.string().min(1).optional(),
 });
 
 const storedFileSchema = z.strictObject({
@@ -65,6 +66,9 @@ function toTargetRecord(record: StoredRecord): TargetRecord {
     ...(record.availabilityDetail === undefined
       ? {}
       : { availabilityDetail: record.availabilityDetail }),
+    ...(record.scanBlockedReason === undefined
+      ? {}
+      : { scanBlockedReason: record.scanBlockedReason }),
   };
 }
 

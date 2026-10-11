@@ -25,6 +25,7 @@ describe("adapter failure disposition", () => {
     AdapterFailureCategory.RATE_LIMITED,
     AdapterFailureCategory.SLOT_DISAPPEARED,
     AdapterFailureCategory.TRANSIENT_TRANSPORT,
+    AdapterFailureCategory.BROWSER_NOT_READY,
   ])("marks %s for a normal retry through WAITING", (category) => {
     expect(dispositionForAdapterFailure(category)).toBe(
       AdapterFailureDisposition.RETRY_WAITING,
