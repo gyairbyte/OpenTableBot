@@ -172,10 +172,10 @@ export const FRONTEND_HTML = String.raw`<!doctype html>
       <div class="policy-list">
         <label class="check"><input name="autoBookAuthorized" type="checkbox"> Authorize automatic booking</label>
         <label class="check"><input name="allowPrepaid" type="checkbox"> Allow prepaid reservations</label>
-        <label>Max prepaid cents<input name="maxAuthorizedPrepaidCents" type="number" min="0" value="0"></label>
+        <label>Max prepaid deposit ($)<input name="maxAuthorizedPrepaidDollars" type="number" min="0" step="0.01" value="0"></label>
         <label class="check"><input name="allowExperiences" type="checkbox"> Allow experiences</label>
         <label class="check"><input name="allowPaymentMethodRequired" type="checkbox"> Allow payment method required</label>
-        <label>Max cancellation/no-show cents<input name="maxAuthorizedCancellationNoShowCents" type="number" min="0" value="0"></label>
+        <label>Max cancellation/no-show fee per person ($)<input name="maxAuthorizedCancellationNoShowDollarsPerPerson" type="number" min="0" step="0.01" value="0"></label>
         <label>Currency<input name="currency" value="USD" maxlength="3"></label>
       </div>
     </fieldset>
@@ -851,6 +851,16 @@ function parsePreferences(value) {
   });
 }
 
+/** Parses an operator-entered dollar amount like 35 or 35.50; blank means 0. */
+function parseDollars(value, label) {
+  var trimmed = String(value || "").trim();
+  if (!trimmed) return 0;
+  if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) {
+    throw new Error(label + " must be a dollar amount like 35 or 35.50");
+  }
+  return Number(trimmed);
+}
+
 function buildTarget() {
   var form = byId("task-form");
   var target = {
@@ -873,8 +883,8 @@ function buildTarget() {
     mode: form.mode.value,
     bookingPolicy: {
       allowPrepaid: form.allowPrepaid.checked,
-      maxAuthorizedPrepaidCents: Number(form.maxAuthorizedPrepaidCents.value || 0),
-      maxAuthorizedCancellationNoShowCents: Number(form.maxAuthorizedCancellationNoShowCents.value || 0),
+      maxAuthorizedPrepaidDollars: parseDollars(form.maxAuthorizedPrepaidDollars.value, "Max prepaid deposit"),
+      maxAuthorizedCancellationNoShowDollarsPerPerson: parseDollars(form.maxAuthorizedCancellationNoShowDollarsPerPerson.value, "Max cancellation/no-show fee per person"),
       currency: form.currency.value.trim().toUpperCase(),
       allowExperiences: form.allowExperiences.checked,
       allowPaymentMethodRequired: form.allowPaymentMethodRequired.checked,
@@ -1139,10 +1149,10 @@ function startEdit(record) {
   var policy = target.bookingPolicy;
   form.autoBookAuthorized.checked = policy.autoBookAuthorized;
   form.allowPrepaid.checked = policy.allowPrepaid;
-  form.maxAuthorizedPrepaidCents.value = policy.maxAuthorizedPrepaidCents;
+  form.maxAuthorizedPrepaidDollars.value = policy.maxAuthorizedPrepaidDollars;
   form.allowExperiences.checked = policy.allowExperiences;
   form.allowPaymentMethodRequired.checked = policy.allowPaymentMethodRequired;
-  form.maxAuthorizedCancellationNoShowCents.value = policy.maxAuthorizedCancellationNoShowCents;
+  form.maxAuthorizedCancellationNoShowDollarsPerPerson.value = policy.maxAuthorizedCancellationNoShowDollarsPerPerson;
   form.currency.value = policy.currency;
 
   var dining = target.diningAreaPolicy;

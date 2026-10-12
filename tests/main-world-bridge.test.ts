@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertExecutablePaymentTerms,
   attachPreviewReferences,
   extractInitialStateFromHtml,
   findAvailabilityOperation,
@@ -14,6 +15,93 @@ import {
   hasRequiredPreviewWriteState,
   type PreparedRecord,
 } from "../extension/src/main-world.js";
+
+describe("assertExecutablePaymentTerms", () => {
+  // A card-backed reservation with exact "$35 per person" fees, as previewed.
+  const feeBackedPreview = {
+    prepaid: { status: "not-required" },
+    cancellationFee: { status: "known", amountCents: 10_500 },
+    noShowFee: { status: "known", amountCents: 10_500 },
+    currency: { status: "known", code: "USD" },
+    paymentRequirement: "required",
+    strongAuthentication: "not-required",
+  };
+  const freePreview = {
+    ...feeBackedPreview,
+    cancellationFee: { status: "none" },
+    noShowFee: { status: "none" },
+    paymentRequirement: "not-required",
+  };
+
+  it("allows a fee-backed reservation when the provider agrees", () => {
+    expect(() =>
+      assertExecutablePaymentTerms(feeBackedPreview, { creditCardRequired: true }),
+    ).not.toThrow();
+  });
+
+  it("allows a reservation with no payment requirement", () => {
+    expect(() =>
+      assertExecutablePaymentTerms(freePreview, { creditCardRequired: false }),
+    ).not.toThrow();
+  });
+
+  it("refuses a prepaid deposit", () => {
+    expect(() =>
+      assertExecutablePaymentTerms(
+        { ...feeBackedPreview, prepaid: { status: "required", amountCents: 5_000 } },
+        { creditCardRequired: true },
+      ),
+    ).toThrow(/PAYMENT_REQUIRED/);
+  });
+
+  it("refuses unreadable payment terms", () => {
+    expect(() =>
+      assertExecutablePaymentTerms(
+        { ...feeBackedPreview, cancellationFee: { status: "unknown" } },
+        { creditCardRequired: true },
+      ),
+    ).toThrow(/PAYMENT_REQUIRED/);
+  });
+
+  it("refuses a known fee without a known currency", () => {
+    expect(() =>
+      assertExecutablePaymentTerms(
+        { ...feeBackedPreview, currency: { status: "unknown" } },
+        { creditCardRequired: true },
+      ),
+    ).toThrow(/PAYMENT_REQUIRED/);
+  });
+
+  it("refuses interactive strong authentication", () => {
+    expect(() =>
+      assertExecutablePaymentTerms(
+        { ...feeBackedPreview, strongAuthentication: "required" },
+        { creditCardRequired: true },
+      ),
+    ).toThrow(/SCA_REQUIRED/);
+    expect(() =>
+      assertExecutablePaymentTerms(feeBackedPreview, {
+        creditCardRequired: true,
+        strongAuthenticationRequired: true,
+      }),
+    ).toThrow(/SCA_REQUIRED/);
+  });
+
+  it("refuses when the provider disagrees with the previewed terms", () => {
+    expect(() =>
+      assertExecutablePaymentTerms(feeBackedPreview, { creditCardRequired: false }),
+    ).toThrow(/PAYMENT_REQUIRED/);
+    expect(() =>
+      assertExecutablePaymentTerms(freePreview, { creditCardRequired: true }),
+    ).toThrow(/PAYMENT_REQUIRED/);
+  });
+
+  it("refuses when the provider did not report payment terms", () => {
+    expect(() => assertExecutablePaymentTerms(feeBackedPreview, {})).toThrow(
+      /PAYMENT_REQUIRED/,
+    );
+  });
+});
 
 describe("MAIN-world Apollo bridge", () => {
   function prepared(overrides: Partial<PreparedRecord> = {}): PreparedRecord {

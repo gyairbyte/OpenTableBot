@@ -76,4 +76,53 @@ describe("BookingTarget schema", () => {
       diningAreaPolicy: { mode: "any", selection: "provider-order" },
     })).success).toBe(false);
   });
+
+  it("migrates legacy cent-based policy caps to dollars", () => {
+    const legacy = JSON.parse(JSON.stringify(makeTarget())) as {
+      bookingPolicy: Record<string, unknown>;
+    };
+    delete legacy.bookingPolicy.maxAuthorizedPrepaidDollars;
+    delete legacy.bookingPolicy.maxAuthorizedCancellationNoShowDollarsPerPerson;
+    legacy.bookingPolicy.maxAuthorizedPrepaidCents = 10_000;
+    legacy.bookingPolicy.maxAuthorizedCancellationNoShowCents = 5_000;
+
+    const parsed = BookingTargetSchema.parse(legacy);
+    expect(parsed.bookingPolicy.maxAuthorizedPrepaidDollars).toBe(100);
+    // The legacy cap was a per-booking total; the fixture party of 2 gives $25/person.
+    expect(parsed.bookingPolicy.maxAuthorizedCancellationNoShowDollarsPerPerson).toBe(25);
+  });
+
+  it("rounds a divided legacy cancellation/no-show cap down to the cent", () => {
+    const legacy = JSON.parse(JSON.stringify(makeTarget({ partySize: 3 }))) as {
+      bookingPolicy: Record<string, unknown>;
+    };
+    delete legacy.bookingPolicy.maxAuthorizedCancellationNoShowDollarsPerPerson;
+    legacy.bookingPolicy.maxAuthorizedCancellationNoShowCents = 5_000;
+
+    const parsed = BookingTargetSchema.parse(legacy);
+    // floor(5000 / 3) cents per person keeps the total at or below the old cap.
+    expect(parsed.bookingPolicy.maxAuthorizedCancellationNoShowDollarsPerPerson).toBe(16.66);
+  });
+
+  it("lets new dollar fields win over legacy cent fields", () => {
+    const legacy = JSON.parse(JSON.stringify(makeTarget())) as {
+      bookingPolicy: Record<string, unknown>;
+    };
+    legacy.bookingPolicy.maxAuthorizedPrepaidCents = 10_000;
+
+    const parsed = BookingTargetSchema.parse(legacy);
+    expect(parsed.bookingPolicy.maxAuthorizedPrepaidDollars).toBe(100);
+  });
+
+  it("rejects dollar caps with sub-cent fractions", () => {
+    const result = BookingTargetSchema.safeParse(
+      makeTarget({
+        bookingPolicy: {
+          ...makeTarget().bookingPolicy,
+          maxAuthorizedCancellationNoShowDollarsPerPerson: 35.001,
+        },
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
 });

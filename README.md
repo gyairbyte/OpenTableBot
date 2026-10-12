@@ -87,9 +87,11 @@ npm run opentable:preview -- \
   --auto-book-authorized false
 ```
 
-Optional policy flags include `--allow-prepaid`, `--max-prepaid-cents`,
-`--max-cancellation-no-show-cents`, `--allow-experiences`, and
-`--allow-payment-method-required`. Dining areas default to
+Optional policy flags include `--allow-prepaid`, `--max-prepaid-dollars`,
+`--max-cancellation-no-show-dollars-per-person`, `--allow-experiences`, and
+`--allow-payment-method-required`. Spending caps are dollar amounts (the
+cancellation/no-show cap is per person, matching provider wording like "$35
+per person"). Dining areas default to
 `--dining-area-mode any`, with provider order as the deterministic selection
 rule. `allow` accepts comma-separated `--dining-area-categories` and/or exact
 `--dining-area-labels`; `prefer` accepts ordered entries such as

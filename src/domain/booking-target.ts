@@ -17,7 +17,60 @@ export const BookingTargetModeSchema = z.enum([
 
 export type BookingTargetMode = z.infer<typeof BookingTargetModeSchema>;
 
-export const BookingTargetSchema = z
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Targets stored before the policy caps moved from integer cents to dollars
+ * still carry the legacy field names. Map them once at the schema boundary so
+ * old state files keep loading. The cancellation/no-show cap also changed
+ * meaning, from a per-booking total to a per-person amount, so the legacy
+ * total is divided by the party size and rounded down to the cent, which can
+ * only shrink the authorization. New fields, when present, win over legacy
+ * ones.
+ */
+function migrateLegacyPolicyAmounts(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.bookingPolicy)) return value;
+  const policy = value.bookingPolicy;
+  const legacyPrepaidCents = policy.maxAuthorizedPrepaidCents;
+  const legacyCancellationCents = policy.maxAuthorizedCancellationNoShowCents;
+  if (
+    typeof legacyPrepaidCents !== "number" &&
+    typeof legacyCancellationCents !== "number"
+  ) {
+    return value;
+  }
+  const partySize =
+    typeof value.partySize === "number" &&
+    Number.isInteger(value.partySize) &&
+    value.partySize >= 1
+      ? value.partySize
+      : 1;
+  const rest = { ...policy };
+  delete rest.maxAuthorizedPrepaidCents;
+  delete rest.maxAuthorizedCancellationNoShowCents;
+  return {
+    ...value,
+    bookingPolicy: {
+      ...rest,
+      maxAuthorizedPrepaidDollars:
+        rest.maxAuthorizedPrepaidDollars ??
+        (typeof legacyPrepaidCents === "number"
+          ? Math.round(legacyPrepaidCents) / 100
+          : 0),
+      maxAuthorizedCancellationNoShowDollarsPerPerson:
+        rest.maxAuthorizedCancellationNoShowDollarsPerPerson ??
+        (typeof legacyCancellationCents === "number"
+          ? Math.floor(legacyCancellationCents / partySize) / 100
+          : 0),
+    },
+  };
+}
+
+export const BookingTargetSchema = z.preprocess(
+  migrateLegacyPolicyAmounts,
+  z
   .object({
     id: z.string().min(1),
     restaurant: z.object({
@@ -87,7 +140,8 @@ export const BookingTargetSchema = z
         message: "Use diningAreaPolicy or legacy allowedSeatingTypes, not both",
       });
     }
-  });
+  }),
+);
 
 export type BookingTarget = z.infer<typeof BookingTargetSchema>;
 
