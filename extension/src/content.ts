@@ -28,6 +28,7 @@ import { SafeDiningAreaCandidatesSchema } from "../../src/opentable/browser/dini
 import { SafeSearchResultsSchema, type SafeSearchResults } from "../../src/opentable/browser/search-types.js";
 import { classifyInterruptedLock, type LockTelemetryStage } from "../../src/opentable/bridge/lock-lifecycle.js";
 import { DiningAreaOptionSchema } from "../../src/domain/dining-area.js";
+import { AVAILABILITY_PROVIDER_ERRORS_MESSAGE } from "../../src/opentable/bridge/page-errors.js";
 
 const REQUEST_MARKER = "opentablebot:availability-request";
 const RESPONSE_MARKER = "opentablebot:availability-response";
@@ -253,6 +254,16 @@ function availabilityVariables(request: ReturnType<typeof FindSlotsRequestPayloa
   };
 }
 
+function providerErrorsMessage(errors: readonly unknown[]): string {
+  const first = errors.find(isRecord);
+  const detail =
+    plainText(first?.message)?.slice(0, 200) ??
+    plainText(JSON.stringify(errors))?.slice(0, 200);
+  return detail === undefined
+    ? AVAILABILITY_PROVIDER_ERRORS_MESSAGE
+    : `${AVAILABILITY_PROVIDER_ERRORS_MESSAGE}: ${detail}`;
+}
+
 function queryAvailability(request: ReturnType<typeof FindSlotsRequestPayloadSchema.parse>): Promise<SafeAvailabilityData> {
   const id = crypto.randomUUID();
   return new Promise((resolve, reject) => {
@@ -275,7 +286,7 @@ function queryAvailability(request: ReturnType<typeof FindSlotsRequestPayloadSch
           Array.isArray(event.data.result.errors) &&
           event.data.result.errors.length > 0
         ) {
-          reject(new Error("RestaurantsAvailability returned provider errors"));
+          reject(new Error(providerErrorsMessage(event.data.result.errors)));
           return;
         }
         const result = isRecord(event.data.result) && "data" in event.data.result

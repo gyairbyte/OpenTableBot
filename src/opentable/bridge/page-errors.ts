@@ -6,3 +6,11 @@
  */
 export const AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE =
   "The RestaurantsAvailability operation has not been observed on this page";
+
+/**
+ * Prefix of the message the extension raises when an availability response
+ * carries GraphQL `errors`. These have been seen mid-watch after dozens of
+ * clean polls, so the adapter treats them as retryable rather than pausing.
+ */
+export const AVAILABILITY_PROVIDER_ERRORS_MESSAGE =
+  "RestaurantsAvailability returned provider errors";

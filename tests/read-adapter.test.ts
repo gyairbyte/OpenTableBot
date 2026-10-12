@@ -4,7 +4,10 @@ import { AdapterFailureCategory, type OpenTableAdapterError } from "../src/opent
 import type { OpenTableBridgeClientPort } from "../src/opentable/bridge/read-adapter.js";
 import { BrowserBridgeOpenTableReadAdapter } from "../src/opentable/bridge/read-adapter.js";
 import { BridgeClientError } from "../src/opentable/bridge/client.js";
-import { AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE } from "../src/opentable/bridge/page-errors.js";
+import {
+  AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE,
+  AVAILABILITY_PROVIDER_ERRORS_MESSAGE,
+} from "../src/opentable/bridge/page-errors.js";
 import type {
   FindSlotsResult,
   GetBookingPreviewResult,
@@ -171,6 +174,11 @@ describe("BrowserBridgeOpenTableReadAdapter", () => {
       "PAGE_OPERATION_UNAVAILABLE",
       AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE,
       AdapterFailureCategory.BROWSER_NOT_READY,
+    ],
+    [
+      "PAGE_OPERATION_UNAVAILABLE",
+      `${AVAILABILITY_PROVIDER_ERRORS_MESSAGE}: Internal server error`,
+      AdapterFailureCategory.TRANSIENT_TRANSPORT,
     ],
     [
       "PAGE_OPERATION_UNAVAILABLE",
