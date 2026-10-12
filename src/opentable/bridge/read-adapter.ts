@@ -29,6 +29,7 @@ import { BridgeClientError, type OpenTableBridgeClient } from "./client.js";
 import {
   AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE,
   AVAILABILITY_PROVIDER_ERRORS_MESSAGE,
+  isTransientAvailabilityHttpFailure,
 } from "./page-errors.js";
 import type {
   FindSlotsResult,
@@ -118,7 +119,8 @@ export function mapBridgeError(error: unknown): never {
         : error.code === "PAGE_OPERATION_UNAVAILABLE"
           ? error.message.includes(AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE)
             ? AdapterFailureCategory.BROWSER_NOT_READY
-            : error.message.includes(AVAILABILITY_PROVIDER_ERRORS_MESSAGE)
+            : error.message.includes(AVAILABILITY_PROVIDER_ERRORS_MESSAGE) ||
+                isTransientAvailabilityHttpFailure(error.message)
               ? AdapterFailureCategory.TRANSIENT_TRANSPORT
               : AdapterFailureCategory.UNEXPECTED_RESPONSE
               : AdapterFailureCategory.UNKNOWN;

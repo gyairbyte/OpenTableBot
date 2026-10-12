@@ -14,3 +14,17 @@ export const AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE =
  */
 export const AVAILABILITY_PROVIDER_ERRORS_MESSAGE =
   "RestaurantsAvailability returned provider errors";
+
+/**
+ * The page raises `RestaurantsAvailability HTTP <status>; ...` when the
+ * replayed request gets a non-2xx response. A gateway failure (502, 503, 504)
+ * is OpenTable being briefly unreachable, so a watcher that has polled cleanly
+ * for hours should survive it. Other statuses (401, 403, 404, ...) still pause.
+ */
+const AVAILABILITY_HTTP_STATUS_PATTERN = /\bRestaurantsAvailability HTTP (\d{3})\b/;
+const TRANSIENT_AVAILABILITY_HTTP_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
+
+export function isTransientAvailabilityHttpFailure(message: string): boolean {
+  const status = AVAILABILITY_HTTP_STATUS_PATTERN.exec(message)?.[1];
+  return status !== undefined && TRANSIENT_AVAILABILITY_HTTP_STATUSES.has(Number(status));
+}

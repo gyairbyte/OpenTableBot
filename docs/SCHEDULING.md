@@ -144,8 +144,9 @@ A watcher keeps watching, staying `ARMED`, when:
 - a scan finds nothing acceptable, which is the normal case;
 - the browser is momentarily unavailable, since a closed tab or a resuming
   machine must not end an hours-long watch;
-- a retryable failure (rate limiting, a dropped transport, a lock that was
-  never dispatched) interrupts a scan or a lock attempt;
+- a retryable failure (rate limiting, a dropped transport, a gateway error such
+  as HTTP 502, 503, or 504 from the availability request, a lock that was never
+  dispatched) interrupts a scan or a lock attempt;
 - the browser page is not ready: no eligible OpenTable page is bound, or the
   restaurant page has not yet made the availability request the extension
   replays (a reloaded or wrong tab). A known-drop target still pauses on these.
