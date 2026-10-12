@@ -182,6 +182,21 @@ describe("BrowserBridgeOpenTableReadAdapter", () => {
     ],
     [
       "PAGE_OPERATION_UNAVAILABLE",
+      "RestaurantsAvailability HTTP 504; replay diff: restaurantIds [number]->[number]",
+      AdapterFailureCategory.TRANSIENT_TRANSPORT,
+    ],
+    [
+      "PAGE_OPERATION_UNAVAILABLE",
+      "RestaurantsAvailability HTTP 503; provider body: Service Unavailable",
+      AdapterFailureCategory.TRANSIENT_TRANSPORT,
+    ],
+    [
+      "PAGE_OPERATION_UNAVAILABLE",
+      "RestaurantsAvailability HTTP 403; replay diff: restaurantIds [number]->[number]",
+      AdapterFailureCategory.UNEXPECTED_RESPONSE,
+    ],
+    [
+      "PAGE_OPERATION_UNAVAILABLE",
       "Availability request failed validation",
       AdapterFailureCategory.UNEXPECTED_RESPONSE,
     ],
