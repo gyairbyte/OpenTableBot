@@ -114,6 +114,34 @@ describe("booking preview financial policy", () => {
     });
   });
 
+  it("scales the per-person cancellation/no-show cap by the party size", () => {
+    const slot = makeSlot({ partySize: 3 });
+    const target = makeTarget({
+      partySize: 3,
+      bookingPolicy: {
+        ...makeTarget().bookingPolicy,
+        maxAuthorizedCancellationNoShowDollarsPerPerson: 35,
+      },
+    });
+    // "$35 per person" at a party of 3 parses to a $105 total.
+    const preview = makePreview({
+      partySize: 3,
+      cancellationFee: { status: "known", amountCents: 10_500 },
+    });
+
+    expect(evaluateBookingPreview(target, slot, preview)).toEqual({ allowed: true });
+
+    expect(
+      evaluateBookingPreview(target, slot, {
+        ...preview,
+        cancellationFee: { status: "known", amountCents: 10_501 },
+      }),
+    ).toMatchObject({
+      allowed: false,
+      reasons: [PolicyRejectionReason.CANCELLATION_EXPOSURE_EXCEEDS_AUTHORIZATION],
+    });
+  });
+
   it("fails closed when a required prepaid amount is unknown", () => {
     const result = evaluateBookingPreview(
       makeTarget(),

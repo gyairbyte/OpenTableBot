@@ -20,8 +20,8 @@ export function makeTarget(
     allowedSeatingTypes: ["standard", "outdoor"],
     bookingPolicy: {
       allowPrepaid: true,
-      maxAuthorizedPrepaidCents: 10_000,
-      maxAuthorizedCancellationNoShowCents: 5_000,
+      maxAuthorizedPrepaidDollars: 100,
+      maxAuthorizedCancellationNoShowDollarsPerPerson: 25,
       currency: "USD",
       allowExperiences: false,
       allowPaymentMethodRequired: false,

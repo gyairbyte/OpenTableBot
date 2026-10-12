@@ -81,8 +81,8 @@ const PreviewSelectionSchema = z.object({
 /** Permissive policy for a read-only probe: it can never authorize a booking. */
 const PROBE_BOOKING_POLICY = {
   allowPrepaid: true,
-  maxAuthorizedPrepaidCents: 0,
-  maxAuthorizedCancellationNoShowCents: 0,
+  maxAuthorizedPrepaidDollars: 0,
+  maxAuthorizedCancellationNoShowDollarsPerPerson: 0,
   currency: "USD",
   allowExperiences: true,
   allowPaymentMethodRequired: true,

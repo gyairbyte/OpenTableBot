@@ -75,8 +75,8 @@ Targets live in `.local/state/targets.json` (override the directory with
         "diningAreaPolicy": { "mode": "any", "selection": "provider-order" },
         "bookingPolicy": {
           "allowPrepaid": false,
-          "maxAuthorizedPrepaidCents": 0,
-          "maxAuthorizedCancellationNoShowCents": 0,
+          "maxAuthorizedPrepaidDollars": 0,
+          "maxAuthorizedCancellationNoShowDollarsPerPerson": 0,
           "currency": "USD",
           "allowExperiences": false,
           "allowPaymentMethodRequired": false,

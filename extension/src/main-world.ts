@@ -390,6 +390,52 @@ export function beginPreparedSubmission(
   return { kind: "begin" };
 }
 
+/**
+ * Page-side gate for the payment shape of a booking. The operator's spending
+ * policy (per-person fee cap, deposit cap, currency) is enforced in the
+ * domain layer before an intent ever reaches the page; this layer refuses
+ * only the shapes the automated flow cannot execute at all:
+ * - prepaid deposits, which charge the card at booking time;
+ * - payment terms that could not be read exactly;
+ * - interactive strong authentication (3-D Secure), which needs a human;
+ * - provider details that disagree with the previewed payment terms.
+ * A fee-backed reservation, where the account's stored card is charged only
+ * on a late cancellation or no-show, passes when every term is known.
+ */
+export function assertExecutablePaymentTerms(
+  preview: Record<string, unknown>,
+  rawTimeSlot: Record<string, unknown>,
+): void {
+  const cancellation = preview.cancellationFee;
+  const noShow = preview.noShowFee;
+  if (
+    !isRecord(preview.prepaid) || preview.prepaid.status !== "not-required" ||
+    !isRecord(cancellation) || cancellation.status === "unknown" ||
+    !isRecord(noShow) || noShow.status === "unknown" ||
+    (preview.paymentRequirement !== "not-required" &&
+      preview.paymentRequirement !== "required")
+  ) throw new Error("PAYMENT_REQUIRED: Prepaid deposits and unreadable payment terms are not supported");
+  const monetaryExposure =
+    (cancellation.status === "known" && Number(cancellation.amountCents) > 0) ||
+    (noShow.status === "known" && Number(noShow.amountCents) > 0);
+  if (monetaryExposure && (!isRecord(preview.currency) || preview.currency.status !== "known")) {
+    throw new Error("PAYMENT_REQUIRED: Currency is required for monetary exposure");
+  }
+  if (preview.strongAuthentication !== "not-required") {
+    throw new Error("SCA_REQUIRED: Interactive strong authentication is not supported");
+  }
+  const providerRequiresCard = rawTimeSlot.creditCardRequired;
+  if (
+    typeof providerRequiresCard !== "boolean" ||
+    providerRequiresCard !== (preview.paymentRequirement === "required")
+  ) {
+    throw new Error("PAYMENT_REQUIRED: Provider payment terms changed since the booking preview");
+  }
+  if (rawTimeSlot.strongAuthenticationRequired === true) {
+    throw new Error("SCA_REQUIRED: Provider details require interactive strong authentication");
+  }
+}
+
 function validateStandardIntent(intent: Record<string, unknown>): { previewReference: string; record: PreviewRecord } {
   const previewReference = intent.previewReference;
   const reservationKind = intent.reservationKind;
@@ -429,31 +475,9 @@ function validateStandardIntent(intent: Record<string, unknown>): { previewRefer
     record.exactDiningArea === undefined ||
     canonical(record.exactDiningArea.option) !== canonical(intent.diningArea)
   ) throw new Error("BOOKING_INVARIANT_MISMATCH: Intent does not match the previewed slot");
-  const cancellation = preview.cancellationFee;
-  const noShow = preview.noShowFee;
-  if (
-    !isRecord(preview.prepaid) || preview.prepaid.status !== "not-required" ||
-    !isRecord(cancellation) || cancellation.status === "unknown" ||
-    !isRecord(noShow) || noShow.status === "unknown" ||
-    preview.paymentRequirement !== "not-required"
-  ) throw new Error("PAYMENT_REQUIRED: Prepaid, unknown terms, and payment-backed reservations are not supported");
-  const monetaryExposure =
-    (cancellation.status === "known" && Number(cancellation.amountCents) > 0) ||
-    (noShow.status === "known" && Number(noShow.amountCents) > 0);
-  if (monetaryExposure && (!isRecord(preview.currency) || preview.currency.status !== "known")) {
-    throw new Error("PAYMENT_REQUIRED: Currency is required for monetary exposure");
-  }
-  if (preview.strongAuthentication !== "not-required") {
-    throw new Error("SCA_REQUIRED: Interactive strong authentication is not supported");
-  }
   const rawRoot = rootState(record.detailsState);
   const rawTimeSlot = isRecord(rawRoot.timeSlot) ? rawRoot.timeSlot : {};
-  if (rawTimeSlot.creditCardRequired !== false) {
-    throw new Error("PAYMENT_REQUIRED: Provider details did not confirm that no payment method is required");
-  }
-  if (rawTimeSlot.strongAuthenticationRequired === true) {
-    throw new Error("SCA_REQUIRED: Provider details require interactive strong authentication");
-  }
+  assertExecutablePaymentTerms(preview, rawTimeSlot);
   if (
     typeof rawTimeSlot.reservationType === "string" &&
     rawTimeSlot.reservationType.toLowerCase() !== "standard"

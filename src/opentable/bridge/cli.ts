@@ -145,9 +145,9 @@ function targetFromFlags(flags: ReadonlyMap<string, string>): BookingTarget {
     diningAreaPolicy: diningAreaPolicyFromFlags(flags),
     bookingPolicy: {
       allowPrepaid: booleanFlag(flags, "allow-prepaid", false),
-      maxAuthorizedPrepaidCents: Number(flags.get("max-prepaid-cents") ?? "0"),
-      maxAuthorizedCancellationNoShowCents: Number(
-        flags.get("max-cancellation-no-show-cents") ?? "0",
+      maxAuthorizedPrepaidDollars: Number(flags.get("max-prepaid-dollars") ?? "0"),
+      maxAuthorizedCancellationNoShowDollarsPerPerson: Number(
+        flags.get("max-cancellation-no-show-dollars-per-person") ?? "0",
       ),
       currency: flags.get("currency") ?? "USD",
       allowExperiences: booleanFlag(flags, "allow-experiences", false),

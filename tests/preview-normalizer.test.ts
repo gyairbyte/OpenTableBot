@@ -158,7 +158,7 @@ describe("read-only booking preview normalization", () => {
   it("rejects a prepaid amount over the target limit", () => {
     const slot = makeSlot();
     const target = makeTarget({
-      bookingPolicy: { ...makeTarget().bookingPolicy, maxAuthorizedPrepaidCents: 1_000 },
+      bookingPolicy: { ...makeTarget().bookingPolicy, maxAuthorizedPrepaidDollars: 10 },
     });
     const preview = normalizeBookingPreview(
       result({

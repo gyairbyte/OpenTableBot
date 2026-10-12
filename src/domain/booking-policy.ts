@@ -9,10 +9,25 @@ import {
 import type { BookingPreview } from "./reservation-slot.js";
 import type { ReservationSlot } from "./reservation-slot.js";
 
+/** Dollar amounts are entered by operators, so fractions beyond cents are junk. */
+const DollarAmountSchema = z
+  .number()
+  .nonnegative()
+  .refine(
+    (value) => Math.abs(value * 100 - Math.round(value * 100)) < 1e-6,
+    "Enter a dollar amount with at most two decimal places",
+  );
+
 export const BookingPolicySchema = z.object({
   allowPrepaid: z.boolean(),
-  maxAuthorizedPrepaidCents: z.number().int().nonnegative(),
-  maxAuthorizedCancellationNoShowCents: z.number().int().nonnegative(),
+  /** Deposit ceiling in dollars. A prepaid deposit is charged once per booking. */
+  maxAuthorizedPrepaidDollars: DollarAmountSchema,
+  /**
+   * Cancellation and no-show fees are stated per person ("$35 per person"),
+   * so this ceiling is per person and is scaled by the party size before it is
+   * compared against the fee's total.
+   */
+  maxAuthorizedCancellationNoShowDollarsPerPerson: DollarAmountSchema,
   currency: z.string().regex(/^[A-Z]{3}$/),
   allowExperiences: z.boolean(),
   allowPaymentMethodRequired: z.boolean(),
@@ -61,6 +76,10 @@ export type PolicyEvaluation =
       readonly allowed: false;
       readonly reasons: readonly PolicyRejectionReason[];
     };
+
+function dollarsToCents(dollars: number): number {
+  return Math.round(dollars * 100);
+}
 
 /**
  * Fail-closed evaluation of the exact booking terms returned by an adapter.
@@ -168,7 +187,9 @@ export function evaluateBookingPreview(
     }
     if (preview.prepaid.status === "required-unknown") {
       reasons.push(PolicyRejectionReason.PREPAID_AMOUNT_UNKNOWN);
-    } else if (preview.prepaid.amountCents > policy.maxAuthorizedPrepaidCents) {
+    } else if (
+      preview.prepaid.amountCents > dollarsToCents(policy.maxAuthorizedPrepaidDollars)
+    ) {
       reasons.push(
         PolicyRejectionReason.PREPAID_AMOUNT_EXCEEDS_AUTHORIZATION,
       );
@@ -182,13 +203,20 @@ export function evaluateBookingPreview(
     reasons.push(PolicyRejectionReason.NO_SHOW_FEE_UNKNOWN);
   }
 
+  // A fee parsed from wording like "$35 per person" arrives as the total for
+  // the whole party, so the per-person cap is scaled the same way before
+  // comparing. A rare flat fee is measured against the scaled cap too, which
+  // is slightly lenient; per-person wording is the norm for these fees.
+  const authorizedCancellationNoShowCents =
+    dollarsToCents(policy.maxAuthorizedCancellationNoShowDollarsPerPerson) *
+    target.partySize;
   const financialExposureExceedsAuthorization = [
     preview.cancellationFee,
     preview.noShowFee,
   ].some(
     (term) =>
       term.status === "known" &&
-      term.amountCents > policy.maxAuthorizedCancellationNoShowCents,
+      term.amountCents > authorizedCancellationNoShowCents,
   );
   if (financialExposureExceedsAuthorization) {
     reasons.push(
