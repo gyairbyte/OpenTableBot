@@ -132,7 +132,7 @@ of additional availability lookups. It never substitutes a nearby time.
 A `cancellation-watch` target is the opposite shape: instead of one attempt at a
 known moment, it keeps looking for a table that someone else gives up.
 
-The scheduler checks every 30 seconds while the process keeps running. It
+The scheduler checks every 10 seconds while the process keeps running. It
 accepts any acceptable time inside the target's earliest/latest window and
 takes the one closest to `timeWindow.preferred`, so a 19:15 opening wins over an
 18:00 one when 19:00 was asked for. It books by itself only in Live mode and

@@ -517,6 +517,24 @@ describe("ControlledBookingEngine", () => {
     );
   });
 
+  it("reads availability once per poll for a cancellation watcher", async () => {
+    const store = new FileTargetStore({ directory: await tempDirectory() });
+    await seedWatcher(store);
+    const adapter = bookingAdapter({
+      findSlotsDetailed: vi
+        .fn<(target: BookingTarget) => Promise<DetailedAvailability>>()
+        .mockResolvedValue(detailed([])),
+    });
+    const engine = new ControlledBookingEngine(
+      { adapter, store, notifier: recordingNotifier([]) },
+      { execute: true, availabilityAttempts: 3, availabilityRetryDelayMs: 1 },
+    );
+
+    await engine.runOnce("target-1");
+
+    expect(adapter.findSlotsDetailed).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps a cancellation watcher armed after a dry-run scan", async () => {
     const store = new FileTargetStore({ directory: await tempDirectory() });
     await seedWatcher(store);

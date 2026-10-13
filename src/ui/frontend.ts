@@ -1258,7 +1258,7 @@ function syncModeFields() {
   var note = byId("mode-hint");
   note.textContent = knownDrop
     ? "The scheduler only runs known-drop tasks that have a release time."
-    : "The watcher checks every 30 seconds, chooses the closest available time in the window, and auto-books only when Live mode and policy authorize it.";
+    : "The watcher checks every 10 seconds, chooses the closest available time in the window, and auto-books only when Live mode and policy authorize it.";
   note.className = "hint";
 }
 

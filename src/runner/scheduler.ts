@@ -35,7 +35,7 @@ export interface ReservationSchedulerOptions {
 
 const DEFAULT_WARM_UP_LEAD_MS = 60_000;
 const DEFAULT_READINESS_POLL_MS = 5_000;
-const DEFAULT_CANCELLATION_WATCH_POLL_MS = 30_000;
+const DEFAULT_CANCELLATION_WATCH_POLL_MS = 10_000;
 const DEFAULT_WATCHER_BLIND_ALERT_MS = 10 * 60_000;
 
 function localDateInTimeZone(now: number, timeZone: string): string {

@@ -36,6 +36,7 @@ export interface ControlledBookingEngineOptions {
   /**
    * Availability is read repeatedly only when the exact preferred time is
    * absent. The default preserves the original single-shot behavior.
+   * Cancellation watchers ignore this and read once per poll.
    */
   readonly availabilityAttempts?: number;
   readonly availabilityRetryDelayMs?: number;
@@ -215,7 +216,12 @@ export class ControlledBookingEngine implements BookingEngine {
       });
     }
 
-    const availabilityAttempts = this.options.availabilityAttempts ?? 1;
+    // A watcher's next poll is the retry; re-reading within one run only
+    // multiplies requests against OpenTable.
+    const availabilityAttempts =
+      target.mode === "cancellation-watch"
+        ? 1
+        : (this.options.availabilityAttempts ?? 1);
     const availabilityRetryDelayMs = this.options.availabilityRetryDelayMs ?? 250;
     const now = this.options.now ?? (() => Date.now());
     let plan: BookingPlan = { kind: "no-match" };
