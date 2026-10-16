@@ -83,6 +83,17 @@ function legacyDiningArea(slot: ReservationSlot): DiningAreaOption {
  * Ranks acceptable slots by preferred-time distance. Ties resolve by earliest
  * date, earliest time, target seating preference, and finally stable slot ID.
  */
+/**
+ * Last-resort tie-break between slots at the same time with equal preference:
+ * a Standard table beats Bar, Counter and the other seating types. Without it
+ * the choice falls to a slot-id hash, so an `any` policy could book a bar seat
+ * when a standard table was open. Any explicit dining-area preference ranks
+ * ahead of this.
+ */
+function seatingTieBreakRank(slot: ReservationSlot): number {
+  return slot.seatingType === "standard" ? 0 : 1;
+}
+
 export function rankAcceptableSlots(
   target: BookingTarget,
   slots: readonly ReservationSlot[],
@@ -113,6 +124,7 @@ export function rankAcceptableSlots(
             diningAreaPolicy,
             right.diningArea ?? legacyDiningArea(right),
           ) ||
+        seatingTieBreakRank(left) - seatingTieBreakRank(right) ||
         (left.diningArea?.providerOrder ?? 0) -
           (right.diningArea?.providerOrder ?? 0) ||
         compareText(left.id, right.id)
