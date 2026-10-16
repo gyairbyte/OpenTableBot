@@ -28,3 +28,16 @@ export function isTransientAvailabilityHttpFailure(message: string): boolean {
   const status = AVAILABILITY_HTTP_STATUS_PATTERN.exec(message)?.[1];
   return status !== undefined && TRANSIENT_AVAILABILITY_HTTP_STATUSES.has(Number(status));
 }
+
+/**
+ * Dining-area discovery raises `BOOKING_PREVIEW_DINING_AREA_UNKNOWN` or
+ * `BOOKING_PREVIEW_DINING_AREA_CONFLICT` when the booking-details response for
+ * one slot cannot establish an exact dining area. That is a property of that
+ * single slot, not of the scan, so the adapter skips the slot (it is never
+ * booked) instead of failing the whole availability read.
+ */
+const SLOT_DINING_AREA_FAILURE_PATTERN = /\bBOOKING_PREVIEW_DINING_AREA_(?:UNKNOWN|CONFLICT):/;
+
+export function isSlotDiningAreaDiscoveryFailure(message: string): boolean {
+  return SLOT_DINING_AREA_FAILURE_PATTERN.test(message);
+}

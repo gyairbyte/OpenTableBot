@@ -1295,6 +1295,10 @@ function observedChip(slot, detail) {
   var notes = [slot.seatingType, slot.reservationKind, windowText];
   if (slot.diningAreas.length) notes.push("dining areas: " + slot.diningAreas.join(", "));
   if (slot.rejectionReasons.length) notes.push(slot.rejectionReasons.join(", "));
+  if (slot.diningAreaIssue) {
+    notes.push("skipped, never booked: " + slot.diningAreaIssue);
+    chip.textContent += " (!)";
+  }
   chip.title = notes.join(" · ");
   return chip;
 }

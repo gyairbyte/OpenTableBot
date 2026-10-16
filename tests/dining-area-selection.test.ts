@@ -206,6 +206,14 @@ describe("generalized dining-area candidates", () => {
     ] } }, "default")).toThrow(/DINING_AREA_CONFLICT/u);
   });
 
+  it("15b. names the expected and offered seating when no dining area matches", () => {
+    expect(() => exactDiningAreas({ timeSlot: { diningAreasBySeating: [
+      { diningAreaId: 10, tableCategory: "bar", name: "Bar" },
+      { diningAreaId: 11, tableCategory: "outdoor", name: "Patio" },
+    ] } }, "default")).toThrow(/DINING_AREA_UNKNOWN.*expected "default".*offered bar, outdoor/u);
+    expect(() => exactDiningAreas({ timeSlot: {} }, "default")).toThrow(/offered none/u);
+  });
+
   it("16. Standard-only policy excludes an Experience at the same time", () => {
     const standard = slotWithArea("standard", area("dining-room", "Dining Room", 1));
     const experience = slotWithArea("experience", area("terrace", "Terrace", 0), {

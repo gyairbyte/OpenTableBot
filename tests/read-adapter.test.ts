@@ -210,6 +210,68 @@ describe("BrowserBridgeOpenTableReadAdapter", () => {
     await expect(adapter.findSlots(makeTarget())).rejects.toMatchObject({ category });
   });
 
+  it.each([
+    "BOOKING_PREVIEW_DINING_AREA_UNKNOWN: Provider response contained no matching dining area",
+    "BOOKING_PREVIEW_DINING_AREA_CONFLICT: Provider identity had conflicting display labels",
+  ])("fails closed with the reason when every slot's dining areas cannot be established (%s)", async (message) => {
+    class UnestablishedAreaClient extends FakeBridgeClient {
+      override async listDiningAreas(): Promise<ListDiningAreasResult> {
+        throw new BridgeClientError("PAGE_OPERATION_UNAVAILABLE", message);
+      }
+    }
+    const diagnostics: string[] = [];
+    const adapter = new BrowserBridgeOpenTableReadAdapter(new UnestablishedAreaClient(), {
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    await expect(adapter.findSlotsDetailed(makeTarget())).rejects.toMatchObject({
+      category: AdapterFailureCategory.UNEXPECTED_RESPONSE,
+      message: expect.stringContaining(message),
+    });
+    expect(diagnostics.some((diagnostic) => diagnostic.includes("skipped") && diagnostic.includes(message))).toBe(true);
+  });
+
+  it("skips only the slot whose dining areas cannot be established and records why", async () => {
+    const message = "BOOKING_PREVIEW_DINING_AREA_UNKNOWN: Provider response contained no matching dining area";
+    class FirstSlotUnestablishedClient extends FakeBridgeClient {
+      private calls = 0;
+      override async listDiningAreas(): Promise<ListDiningAreasResult> {
+        this.calls += 1;
+        if (this.calls === 1) throw new BridgeClientError("PAGE_OPERATION_UNAVAILABLE", message);
+        return super.listDiningAreas();
+      }
+    }
+    const data = structuredClone(availabilityData()) as {
+      availability: { availabilityDays: { slots: Record<string, unknown>[] }[] }[];
+    };
+    const slots = data.availability[0]!.availabilityDays[0]!.slots;
+    slots.push({ ...slots[0]!, timeOffsetMinutes: 0, previewReference: "00000000-0000-4000-8000-000000000003" });
+    const adapter = new BrowserBridgeOpenTableReadAdapter(new FirstSlotUnestablishedClient({
+      protocolVersion: 1,
+      id: "response-id",
+      type: "FIND_SLOTS_RESULT",
+      request: { restaurantId: "restaurant-123", date: "2026-09-01", time: "19:00", partySize: 2, databaseRegion: "NA" },
+      data: data as unknown as FindSlotsResult["data"],
+    }));
+    const detailed = await adapter.findSlotsDetailed(makeTarget());
+    const skipped = detailed.observedSlots.filter((slot) => slot.diningAreaIssue !== undefined);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]?.diningAreaIssue).toBe(message);
+    expect(skipped[0]?.diningAreas).toEqual([]);
+    expect(detailed.acceptableSlots.length).toBeGreaterThan(0);
+  });
+
+  it("still fails the scan on other dining-area discovery errors", async () => {
+    class FailingDiscoveryClient extends FakeBridgeClient {
+      override async listDiningAreas(): Promise<ListDiningAreasResult> {
+        throw new BridgeClientError("PAGE_OPERATION_UNAVAILABLE", "Booking details returned HTTP 403");
+      }
+    }
+    const adapter = new BrowserBridgeOpenTableReadAdapter(new FailingDiscoveryClient());
+    await expect(adapter.findSlots(makeTarget())).rejects.toMatchObject({
+      category: AdapterFailureCategory.UNEXPECTED_RESPONSE,
+    });
+  });
+
   it("retrieves a read-only preview without implementing prepare or book", async () => {
     const adapter = new BrowserBridgeOpenTableReadAdapter(new FakeBridgeClient());
     const preview = await adapter.getBookingPreview(makeTarget(), makeSlot());

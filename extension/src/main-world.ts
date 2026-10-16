@@ -1102,7 +1102,12 @@ export function exactDiningAreas(detailsState: unknown, expectedSeating: string)
     byId.set(providerId, candidate);
   }
   if (byId.size === 0) {
-    throw new Error("BOOKING_PREVIEW_DINING_AREA_UNKNOWN: Provider response contained no matching dining area");
+    const offered = [...new Set(raw.flatMap((value) => isRecord(value) && typeof value.tableCategory === "string"
+      ? [sanitizeDiningAreaLabel(value.tableCategory)]
+      : []))];
+    throw new Error(
+      `BOOKING_PREVIEW_DINING_AREA_UNKNOWN: Provider response contained no matching dining area (expected "${sanitizeDiningAreaLabel(expectedSeating)}"; provider offered ${offered.length === 0 ? "none" : offered.join(", ")})`,
+    );
   }
   return [...byId.values()];
 }
