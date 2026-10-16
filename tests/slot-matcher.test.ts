@@ -82,4 +82,50 @@ describe("slot ranking", () => {
       "z-outdoor",
     ]);
   });
+
+  it("prefers a Standard table over Bar and Counter at the same time when areas are indistinguishable", () => {
+    // Momofuku-style response: every seating reports the same "Other" area, so
+    // only the seating type separates the candidates. Ids are chosen so the
+    // old hash-style tie-break would have picked the bar seat.
+    const other = { category: "other", label: "Other", providerOrder: 0 } as const;
+    const ranked = rankAcceptableSlots(makeTarget({ diningAreaPolicy: { mode: "any", selection: "provider-order" } }), [
+      makeSlot({ id: "a-bar", seatingType: "bar", diningArea: other }),
+      makeSlot({ id: "b-counter", seatingType: "counter", diningArea: other }),
+      makeSlot({ id: "c-standard", seatingType: "standard", diningArea: other }),
+    ]);
+
+    expect(ranked.map(({ id }) => id)).toEqual(["c-standard", "a-bar", "b-counter"]);
+  });
+
+  it("lets an explicit dining-area preference outrank the Standard tie-break", () => {
+    const ranked = rankAcceptableSlots(
+      makeTarget({
+        diningAreaPolicy: {
+          mode: "prefer",
+          preferences: [{ type: "category", value: "bar" }],
+          fallback: "any",
+          selection: "provider-order",
+        },
+      }),
+      [
+        makeSlot({ id: "a-standard", seatingType: "standard" }),
+        makeSlot({
+          id: "z-bar",
+          seatingType: "bar",
+          diningArea: { category: "bar", label: "Bar", providerOrder: 0 },
+        }),
+      ],
+    );
+
+    expect(ranked.map(({ id }) => id)).toEqual(["z-bar", "a-standard"]);
+  });
+
+  it("never lets the Standard tie-break override time distance", () => {
+    const ranked = rankAcceptableSlots(makeTarget(), [
+      makeSlot({ id: "standard-far", seatingType: "standard", localTime: "19:30" }),
+      makeSlot({ id: "bar-near", seatingType: "bar", localTime: "19:15" }),
+    ]);
+
+    expect(ranked.map(({ id }) => id)).toEqual(["bar-near", "standard-far"]);
+  });
 });

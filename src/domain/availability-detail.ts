@@ -20,6 +20,12 @@ export interface ObservedAvailabilitySlot {
   readonly rejectionReasons: readonly SlotRejectionReason[];
   /** Dining-area labels the adapter confirmed acceptable for this time. */
   readonly diningAreas: readonly string[];
+  /**
+   * Set when dining-area discovery could not establish an exact area for this
+   * time, so it was skipped and never offered for booking. Carries the
+   * sanitized provider-facing reason.
+   */
+  readonly diningAreaIssue?: string | undefined;
 }
 
 export const ObservedAvailabilitySlotSchema = z.strictObject({
@@ -35,6 +41,7 @@ export const ObservedAvailabilitySlotSchema = z.strictObject({
     ],
   ).array(),
   diningAreas: z.string().min(1).max(120).array(),
+  diningAreaIssue: z.string().min(1).max(300).optional(),
 });
 
 /** One availability lookup, with timing and everything it observed. */

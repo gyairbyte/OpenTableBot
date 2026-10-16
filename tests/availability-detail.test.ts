@@ -222,6 +222,39 @@ describe("detailed availability", () => {
     expect((await store.get("target-1"))?.availabilityDetail).toBeUndefined();
   });
 
+  it("persists a skipped slot's dining-area issue", async () => {
+    const store = new FileTargetStore({
+      directory: await tempDirectory(),
+      now: () => new Date("2026-10-10T14:00:00.000Z"),
+    });
+    const base = runDetail();
+    const detail: AvailabilityRunDetail = {
+      ...base,
+      attempts: base.attempts.map((attempt, index) => index === 0
+        ? {
+            ...attempt,
+            observedSlots: [
+              ...attempt.observedSlots,
+              { ...attempt.observedSlots[0]!, diningAreaIssue: "BOOKING_PREVIEW_DINING_AREA_UNKNOWN: no match" },
+            ],
+          }
+        : attempt),
+    };
+    await store.save(
+      {
+        target: makeTarget(),
+        state: TargetState.PAUSED,
+        version: 0,
+        createdAt: "2026-10-10T13:00:00.000Z",
+        updatedAt: "2026-10-10T13:00:00.000Z",
+        pauseReason: "No slot at the preferred time 19:00",
+        availabilityDetail: detail,
+      },
+      0,
+    );
+    expect((await store.get("target-1"))?.availabilityDetail).toEqual(detail);
+  });
+
   it("still loads state files written before the detail field existed", async () => {
     const directory = await tempDirectory();
     await writeFile(

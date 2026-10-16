@@ -29,6 +29,7 @@ import { BridgeClientError, type OpenTableBridgeClient } from "./client.js";
 import {
   AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE,
   AVAILABILITY_PROVIDER_ERRORS_MESSAGE,
+  isSlotDiningAreaDiscoveryFailure,
   isTransientAvailabilityHttpFailure,
 } from "./page-errors.js";
 import type {
@@ -189,15 +190,18 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
     const normalizedSlots: ReservationSlot[] = [];
     const observedSlots = new Map<string, ObservedAvailabilitySlot & {
       diningAreas: string[];
+      diningAreaIssue?: string;
     }>();
+    let discoveredSlots = 0;
+    const skippedSlots: string[] = [];
     const observeSlot = (
       slot: ReservationSlot,
       rejectionReasons: readonly SlotRejectionReason[],
-    ): ObservedAvailabilitySlot & { diningAreas: string[] } => {
+    ): ObservedAvailabilitySlot & { diningAreas: string[]; diningAreaIssue?: string } => {
       const key = `${slot.localDate}|${slot.localTime}|${slot.seatingType}|${slot.reservationKind.kind}`;
       const existing = observedSlots.get(key);
       if (existing !== undefined) return existing;
-      const observation: ObservedAvailabilitySlot & { diningAreas: string[] } = {
+      const observation: ObservedAvailabilitySlot & { diningAreas: string[]; diningAreaIssue?: string } = {
         localDate: slot.localDate,
         localTime: slot.localTime,
         seatingType: slot.seatingType,
@@ -269,8 +273,20 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
               : slot.reservationKind,
           });
         } catch (error) {
+          // One slot whose details cannot establish an exact dining area must
+          // not discard every other slot in the scan. The slot stays
+          // observed but is never offered for booking.
+          if (error instanceof BridgeClientError && isSlotDiningAreaDiscoveryFailure(error.message)) {
+            this.options.onDiagnostic?.(
+              `Slot ${slot.localDate} ${slot.localTime} ${slot.seatingType} skipped: ${error.message}`,
+            );
+            observation.diningAreaIssue = error.message.replace(/\s+/gu, " ").trim().slice(0, 300);
+            skippedSlots.push(error.message);
+            continue;
+          }
           mapBridgeError(error);
         }
+        discoveredSlots += 1;
         if (discovered.candidates.length === 0) {
           this.options.onDiagnostic?.(
             `Slot ${slot.localDate} ${slot.localTime} ${slot.seatingType} produced no exact dining-area candidates`,
@@ -298,6 +314,16 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
       for (const diagnostic of normalized.diagnostics) {
         this.options.onDiagnostic?.(`Unknown seating label normalized to other: ${diagnostic.label}`);
       }
+    }
+    // Skipping tolerates a few odd slots. When every slot that reached
+    // discovery was skipped the problem is systematic (for example the
+    // provider names seating differently), so fail closed and say why rather
+    // than letting it look like "no availability".
+    if (skippedSlots.length > 0 && discoveredSlots === 0) {
+      throw new OpenTableAdapterError(
+        AdapterFailureCategory.UNEXPECTED_RESPONSE,
+        `Dining-area discovery failed for all ${skippedSlots.length} slot(s); first: ${skippedSlots[0]}`,
+      );
     }
     return {
       acceptableSlots: [
