@@ -117,6 +117,60 @@ describe("ReservationScheduler", () => {
     expect(checkAuthentication).not.toHaveBeenCalled();
   });
 
+  describe("targets sharing a release time", () => {
+    function pair(): readonly TargetRecord[] {
+      const base = record("2026-10-01T12:00:00.000Z");
+      return [
+        { ...base, target: { ...base.target, id: "lunch" } },
+        { ...base, target: { ...base.target, id: "dinner" } },
+      ];
+    }
+
+    function schedulerFor(
+      store: FileTargetStore,
+      runOnce: (id: string) => Promise<void>,
+    ): ReservationScheduler {
+      return new ReservationScheduler(
+        { runOnce },
+        { checkAuthentication: vi.fn().mockResolvedValue({ authenticated: true }) },
+        store,
+        { notify: vi.fn().mockResolvedValue(undefined) },
+        { now: () => Date.parse("2026-10-01T12:00:05.000Z") },
+      );
+    }
+
+    it("starts every target before any one finishes", async () => {
+      const store = new FileTargetStore({ directory: await tempDirectory() });
+      const started: string[] = [];
+      const release: Array<() => void> = [];
+      const scheduler = schedulerFor(store, (id) => {
+        started.push(id);
+        return new Promise<void>((resolve) => {
+          release.push(resolve);
+        });
+      });
+
+      const run = scheduler.runTargets(pair());
+      await vi.waitFor(() => {
+        expect(started).toEqual(["lunch", "dinner"]);
+      });
+      for (const resolve of release) resolve();
+      await run;
+    });
+
+    it("lets the other target run when one fails, then reports the failure", async () => {
+      const store = new FileTargetStore({ directory: await tempDirectory() });
+      const runOnce = vi.fn(async (id: string) => {
+        if (id === "lunch") throw new Error("lunch failed");
+      });
+      const scheduler = schedulerFor(store, runOnce);
+
+      await expect(scheduler.runTargets(pair())).rejects.toThrow("lunch failed");
+
+      expect(runOnce).toHaveBeenCalledWith("dinner");
+    });
+  });
+
   // A drop can trigger on a machine that just resumed. If Chrome and the
   // extension never came up, the run must not start against a dead page.
   it("pauses instead of running when the browser is not ready at the release time", async () => {

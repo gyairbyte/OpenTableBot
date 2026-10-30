@@ -26,10 +26,15 @@ function exactPreviewResult(
   detailsState: Record<string, unknown>,
   providerId: number,
   option: DiningAreaOption = standardPreviewRequest.diningArea,
+  tableCategory?: string,
 ): Record<string, unknown> {
   return {
     detailsState,
-    selectedDiningArea: { providerId, option },
+    selectedDiningArea: {
+      providerId,
+      option,
+      ...(tableCategory === undefined ? {} : { tableCategory }),
+    },
   };
 }
 
@@ -306,6 +311,58 @@ describe("extension availability sanitizer", () => {
 
     expect(sanitized.seatingType).toBe("highTop");
     expect(sanitized.seatingType).not.toBe("high-top");
+  });
+
+  // A restaurant can list Standard and Outdoor under one dining area id (both
+  // shown under "Other"). The category the preview was bound to picks the entry.
+  describe("one dining area offering several table categories", () => {
+    const sharedArea = [
+      { diningAreaId: 11, tableCategory: "default" },
+      { diningAreaId: 11, tableCategory: "outdoor" },
+    ];
+    const other: DiningAreaOption = { category: "other", label: "Other", providerOrder: 0 };
+
+    it("selects the standard entry for a standard-bound preview", () => {
+      const sanitized = sanitizeBookingPreviewResult(
+        exactPreviewResult(bookingDetailsWithDiningAreas(sharedArea), 11, other, "default"),
+        { ...standardPreviewRequest, diningArea: other },
+      );
+      expect(sanitized.seatingType).toBe("default");
+    });
+
+    it("selects the outdoor entry for an outdoor-bound preview", () => {
+      const sanitized = sanitizeBookingPreviewResult(
+        exactPreviewResult(bookingDetailsWithDiningAreas(sharedArea), 11, other, "outdoor"),
+        { ...standardPreviewRequest, seatingType: "outdoor", diningArea: other },
+      );
+      expect(sanitized.seatingType).toBe("outdoor");
+    });
+
+    it("still fails when the bound category is absent from the response", () => {
+      expect(() =>
+        sanitizeBookingPreviewResult(
+          exactPreviewResult(bookingDetailsWithDiningAreas(sharedArea), 11, other, "bar"),
+          { ...standardPreviewRequest, diningArea: other },
+        ),
+      ).toThrow(/BOOKING_PREVIEW_DINING_AREA_MISMATCH/u);
+    });
+
+    it("still fails when the same id and category are repeated", () => {
+      expect(() =>
+        sanitizeBookingPreviewResult(
+          exactPreviewResult(
+            bookingDetailsWithDiningAreas([
+              { diningAreaId: 11, tableCategory: "outdoor" },
+              { diningAreaId: 11, tableCategory: "Outdoor" },
+            ]),
+            11,
+            other,
+            "outdoor",
+          ),
+          { ...standardPreviewRequest, seatingType: "outdoor", diningArea: other },
+        ),
+      ).toThrow(/BOOKING_PREVIEW_DINING_AREA_AMBIGUOUS/u);
+    });
   });
 
   it("fails closed when an exact provider identity appears more than once", () => {

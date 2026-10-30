@@ -327,6 +327,10 @@ function stringValue(value: unknown): string | undefined {
     : undefined;
 }
 
+function compactSeating(value: string): string {
+  return value.toLowerCase().replace(/[\s_-]/gu, "");
+}
+
 function currencyCode(value: unknown): string | undefined {
   return typeof value === "string" && /^[A-Z]{3}$/u.test(value)
     ? value
@@ -393,8 +397,17 @@ export function sanitizeBookingPreviewResult(
       "BOOKING_PREVIEW_SEATING_UNKNOWN: Provider response did not independently establish seating",
     );
   }
-  const matchingDiningAreas = validDiningAreas.filter((area) =>
-    Number(area.diningAreaId) === Number(selectedDiningArea.providerId),
+  // One provider dining area can list several table categories (for example
+  // Standard and Outdoor both under "Other"), so the identity is the area id
+  // together with the category the exact preview was bound to. When the
+  // browser did not report a category the id alone is used, which keeps a
+  // repeated identity ambiguous.
+  const selectedCategory = stringValue(selectedDiningArea.tableCategory);
+  const matchingDiningAreas = validDiningAreas.filter(
+    (area) =>
+      Number(area.diningAreaId) === Number(selectedDiningArea.providerId) &&
+      (selectedCategory === undefined ||
+        compactSeating(String(area.tableCategory)) === compactSeating(selectedCategory)),
   );
   if (matchingDiningAreas.length === 0) {
     throw new Error(

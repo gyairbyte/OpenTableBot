@@ -15,10 +15,17 @@ export interface WindowsTaskRegistration {
   readonly warmUpSeconds: number;
   readonly availabilityAttempts: number;
   readonly availabilityRetryDelayMs: number;
+  /** Set when one task runs several targets that share a restaurant and release time. */
+  readonly groupedTargetIds?: readonly string[];
 }
 
 export interface RegisterWindowsTaskOptions {
   readonly restaurantUrl: string;
+  /**
+   * Other runnable targets in the store. A target that shares its restaurant
+   * and release time with any of them is registered as one shared task.
+   */
+  readonly peers?: readonly BookingTarget[];
   readonly mode: WindowsTaskBookingMode;
   readonly warmUpSeconds?: number;
   readonly availabilityAttempts?: number;
@@ -87,6 +94,56 @@ function taskNameFor(target: BookingTarget): string {
   return `OpenTableBot-${suffix}`;
 }
 
+export interface WindowsTaskScope {
+  readonly taskName: string;
+  /** The one target a solo task is bound to; undefined for a shared task. */
+  readonly targetId: string | undefined;
+  /** Every target a shared task covers; undefined for a solo task. */
+  readonly groupedTargetIds: readonly string[] | undefined;
+}
+
+function sharesDrop(target: BookingTarget, other: BookingTarget): boolean {
+  if (
+    other.mode !== "known-drop" ||
+    target.knownReservationReleaseAt === undefined ||
+    other.knownReservationReleaseAt === undefined
+  ) {
+    return false;
+  }
+  return (
+    other.restaurant.id === target.restaurant.id &&
+    Date.parse(other.knownReservationReleaseAt) === Date.parse(target.knownReservationReleaseAt)
+  );
+}
+
+/**
+ * Two unattended runs would fight over the scheduler lock and the second would
+ * miss its drop, so targets that fire at the same moment at the same restaurant
+ * get one task that runs them all together. Registering from any of them yields
+ * the same task name, so a repeat registration replaces it instead of adding a
+ * second competing task.
+ */
+export function windowsTaskScope(
+  target: BookingTarget,
+  peers: readonly BookingTarget[] = [],
+): WindowsTaskScope {
+  const sharing = peers.filter(
+    (peer) => peer.id !== target.id && sharesDrop(target, peer),
+  );
+  if (sharing.length === 0 || target.knownReservationReleaseAt === undefined) {
+    return { taskName: taskNameFor(target), targetId: target.id, groupedTargetIds: undefined };
+  }
+  const restaurant = target.restaurant.id.replace(/[^A-Za-z0-9_-]/gu, "-").slice(0, 80);
+  const release = new Date(target.knownReservationReleaseAt)
+    .toISOString()
+    .replace(/[^0-9TZ]/gu, "");
+  return {
+    taskName: `OpenTableBot-${restaurant}-${release}`,
+    targetId: undefined,
+    groupedTargetIds: [target.id, ...sharing.map((peer) => peer.id)].sort(),
+  };
+}
+
 async function runPowerShell(
   scriptPath: string,
   argumentsList: readonly string[],
@@ -136,7 +193,8 @@ export async function registerWindowsTask(
   }
   const machineTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const releaseParts = releasePartsAtTimeZone(target, machineTimeZone);
-  const taskName = taskNameFor(target);
+  const scope = windowsTaskScope(target, options.peers);
+  const taskName = scope.taskName;
   const availabilityAttempts = options.availabilityAttempts ?? 3;
   const availabilityRetryDelayMs = options.availabilityRetryDelayMs ?? 250;
   const args = [
@@ -146,8 +204,7 @@ export async function registerWindowsTask(
     releaseParts.time,
     "-DropDate",
     releaseParts.date,
-    "-TargetId",
-    target.id,
+    ...(scope.targetId === undefined ? [] : ["-TargetId", scope.targetId]),
     "-TaskName",
     taskName,
     "-WarmUpSeconds",
@@ -168,5 +225,8 @@ export async function registerWindowsTask(
     warmUpSeconds,
     availabilityAttempts,
     availabilityRetryDelayMs,
+    ...(scope.groupedTargetIds === undefined
+      ? {}
+      : { groupedTargetIds: scope.groupedTargetIds }),
   };
 }
