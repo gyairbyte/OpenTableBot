@@ -647,7 +647,11 @@ function windowsTaskButton(record) {
       setMessage(
         "targets-message",
         "Windows task " + task.taskName + " registered for " + task.dropDate +
-          " " + task.dropTime + ".",
+          " " + task.dropTime + "." +
+          (task.groupedTargetIds
+            ? " It runs " + task.groupedTargetIds.length +
+              " targets together: every armed target at this restaurant and release time."
+            : ""),
         "ok"
       );
       button.disabled = false;

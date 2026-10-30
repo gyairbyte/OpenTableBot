@@ -188,9 +188,10 @@ async function main(): Promise<void> {
       execute = mode === "execute";
     },
     runTargetNow: (record) => loop.runTargetNow(record),
-    createWindowsTask: (record, restaurantUrl) =>
+    createWindowsTask: async (record, restaurantUrl) =>
       registerWindowsTask(record.target, {
         restaurantUrl,
+        peers: (await store.listRunnable()).map((peer) => peer.target),
         mode: execute ? "execute" : "dry-run",
         warmUpSeconds: 600,
         availabilityAttempts: 3,

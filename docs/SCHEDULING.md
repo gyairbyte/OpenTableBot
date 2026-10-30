@@ -19,6 +19,10 @@ deliberately relaxes the first two, and only those two; see
   nearby time. A target can opt out of this with `acceptAnyTimeInWindow`; see
   [Booking any time in the window](#booking-any-time-in-the-window).
 - It runs **once**. There is no post-drop retry loop.
+- Targets that are due together run **concurrently**, so a lunch and a dinner
+  target sharing a release time each fire at it instead of the second waiting
+  behind the first one's lock and submit. One target failing does not stop the
+  others.
 - Ambiguous submissions become terminal `OUTCOME_UNKNOWN` and are never retried.
 - Any challenge, sign-out, access denial, or failure pauses the target and logs it.
 - Every run records a structured **availability detail** on the target: when
@@ -205,7 +209,10 @@ Each runnable task also has a guarded **Run now** action that bypasses the
 release wait and uses the current console mode. Known-drop tasks have a
 **Create Windows task** action that registers a `-WakeToRun` task for the
 target's local release time, using a 10-minute warm-up and three bounded
-availability attempts. Both actions require browser confirmation. Windows task
+availability attempts. Known-drop targets at the same restaurant with the same
+release time share one task, registered with no target filter so it runs all of
+them together; registering from either one replaces that same task. Both
+actions require browser confirmation. Windows task
 registration also requires local PowerShell permission to register a task.
 
 ```sh
