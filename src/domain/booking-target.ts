@@ -95,6 +95,12 @@ export const BookingTargetSchema = z.preprocess(
     diningAreaPolicy: DiningAreaPolicySchema.optional(),
     bookingPolicy: BookingPolicySchema,
     mode: BookingTargetModeSchema,
+    /**
+     * Known-drop only. When set, a run books the acceptable time closest to
+     * `timeWindow.preferred` anywhere in the window instead of requiring the
+     * exact preferred time. A cancellation watcher always behaves this way.
+     */
+    acceptAnyTimeInWindow: z.boolean().optional(),
     knownReservationReleaseAt: z.string().datetime({ offset: true }).optional(),
     cancellationWatchStopAt: z.string().datetime({ offset: true }).optional(),
   })

@@ -58,6 +58,13 @@ function describeFailure(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown booking failure";
 }
 
+/** Whether a run may book any acceptable time in the window, not just the preferred one. */
+function acceptsWindow(target: BookingTarget): boolean {
+  return (
+    target.mode === "cancellation-watch" || target.acceptAnyTimeInWindow === true
+  );
+}
+
 /**
  * Human-readable no-match summary. The stored availability detail carries the
  * full evidence; this reason makes the single most useful distinction visible
@@ -69,7 +76,10 @@ function describeNoMatch(
   attempts: readonly AvailabilityAttempt[],
   attemptCount: number,
 ): string {
-  const base = `No slot at the preferred time ${target.timeWindow.preferred} after ${attemptCount} availability attempt(s); ${attempts[attempts.length - 1]?.acceptableSlots ?? 0} slot(s) were returned`;
+  const wanted = acceptsWindow(target)
+    ? `No acceptable time in the ${target.timeWindow.earliest}-${target.timeWindow.latest} window`
+    : `No slot at the preferred time ${target.timeWindow.preferred}`;
+  const base = `${wanted} after ${attemptCount} availability attempt(s); ${attempts[attempts.length - 1]?.acceptableSlots ?? 0} slot(s) were returned`;
   const lastObserved = attempts[attempts.length - 1]?.observedSlots ?? [];
   if (lastObserved.length === 0) {
     return `${base}, and no open times were observed at all`;
@@ -88,10 +98,11 @@ function describeNoMatch(
  *
  * A known-drop run is single-shot and selects only a slot at the target's
  * exact preferred time; when that time is absent it pauses and notifies
- * instead of substituting a nearby time. A cancellation-watch run instead
- * accepts any acceptable time inside the configured window, takes the one
- * closest to the preferred time, and returns to ARMED so the scheduler can
- * poll again.
+ * instead of substituting a nearby time, unless the target sets
+ * acceptAnyTimeInWindow, in which case it books the acceptable time closest
+ * to the preferred one. A cancellation-watch run always accepts any
+ * acceptable time inside the configured window, takes the one closest to the
+ * preferred time, and returns to ARMED so the scheduler can poll again.
  *
  * Every failure is fail-closed: it pauses unless a cancellation watcher can
  * safely resume watching. An ambiguous submission becomes terminal
@@ -241,11 +252,10 @@ export class ControlledBookingEngine implements BookingEngine {
       );
       // A watcher accepts any acceptable time inside the window and lets the
       // existing ranking pick the one closest to the preferred time. A
-      // known-drop run still considers the exact preferred time only.
-      plan = createBookingPlan(
-        target,
-        target.mode === "cancellation-watch" ? slots : preferred,
-      );
+      // known-drop run does the same only when the target opts in with
+      // acceptAnyTimeInWindow; otherwise it considers the exact preferred
+      // time only.
+      plan = createBookingPlan(target, acceptsWindow(target) ? slots : preferred);
       attempts.push({
         startedAt: new Date(startedAtMs).toISOString(),
         durationMs: Math.max(0, now() - startedAtMs),

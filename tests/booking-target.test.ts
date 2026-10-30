@@ -10,6 +10,13 @@ describe("BookingTarget schema", () => {
     expect(BookingTargetSchema.parse(makeTarget())).toEqual(makeTarget());
   });
 
+  it("keeps the acceptAnyTimeInWindow opt-in when parsing", () => {
+    const target = makeTarget({ acceptAnyTimeInWindow: true });
+
+    expect(BookingTargetSchema.parse(target).acceptAnyTimeInWindow).toBe(true);
+    expect(BookingTargetSchema.parse(makeTarget()).acceptAnyTimeInWindow).toBeUndefined();
+  });
+
   it("rejects inverted date and time windows", () => {
     const result = BookingTargetSchema.safeParse(
       makeTarget({

@@ -16,7 +16,8 @@ deliberately relaxes the first two, and only those two; see
 
 - It selects **only** a slot at the target's exact `timeWindow.preferred` time.
   If that time is absent, it pauses the target and notifies instead of taking a
-  nearby time.
+  nearby time. A target can opt out of this with `acceptAnyTimeInWindow`; see
+  [Booking any time in the window](#booking-any-time-in-the-window).
 - It runs **once**. There is no post-drop retry loop.
 - Ambiguous submissions become terminal `OUTCOME_UNKNOWN` and are never retried.
 - Any challenge, sign-out, access denial, or failure pauses the target and logs it.
@@ -125,7 +126,25 @@ For `known-drop` targets, the scheduler warms up before
 `knownReservationReleaseAt`, polls readiness until the extension and an
 eligible page are available, then waits for the release time and runs once. If
 the exact preferred time is absent, it can make the configured bounded number
-of additional availability lookups. It never substitutes a nearby time.
+of additional availability lookups. It never substitutes a nearby time unless
+the target sets `acceptAnyTimeInWindow`.
+
+### Booking any time in the window
+
+Set `"acceptAnyTimeInWindow": true` on a `known-drop` target (the "Book any open
+time in the earliest-latest window" checkbox in the console) to give it a range
+instead of a single time. The run still happens once at the release time, but it
+now ranks every acceptable slot in `timeWindow.earliest`-`latest` and books the
+one closest to `timeWindow.preferred`, so an exact 19:00 table wins when it is
+open and a lone 20:30 table is taken when it is not. Ties resolve by earlier
+time, then dining-area preference. The same fail-closed booking policy gates the
+chosen slot. If nothing in the window is open the target still pauses, and the
+pause reason names the window rather than the preferred time.
+
+The flag defaults to off, and it has no effect on a `cancellation-watch` target,
+which always works this way. With several availability attempts configured, the
+first attempt that finds any acceptable time books it; it does not keep
+retrying in the hope the exact preferred time appears.
 
 ### Watching for cancellations
 

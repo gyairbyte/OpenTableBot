@@ -200,6 +200,102 @@ describe("ControlledBookingEngine", () => {
     expect(adapter.authorizeBooking).not.toHaveBeenCalled();
   });
 
+  describe("known drop with acceptAnyTimeInWindow", () => {
+    function windowAdapter(slots: readonly ReservationSlot[], bookedId: string, bookedTime: string) {
+      const preview = makePreview({ slotId: bookedId, localTime: bookedTime });
+      return bookingAdapter({
+        findSlotsDetailed: vi
+          .fn<(target: BookingTarget) => Promise<DetailedAvailability>>()
+          .mockResolvedValue(detailed(slots)),
+        getBookingPreview: vi.fn().mockResolvedValue(preview),
+        prepareBooking: vi.fn().mockResolvedValue({
+          preview,
+          bookingHandle: "00000000-0000-4000-8000-000000000010",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        }),
+      });
+    }
+
+    async function seedWindowTarget(store: FileTargetStore): Promise<void> {
+      await seed(store, {
+        target: makeTarget({
+          acceptAnyTimeInWindow: true,
+          timeWindow: { earliest: "18:00", latest: "20:30", preferred: "19:00" },
+        }),
+      });
+    }
+
+    it("books the only open time in the window when the preferred time is absent", async () => {
+      const store = new FileTargetStore({ directory: await tempDirectory() });
+      await seedWindowTarget(store);
+      const adapter = windowAdapter([makeSlot({ id: "late", localTime: "20:30" })], "late", "20:30");
+      const engine = new ControlledBookingEngine(
+        { adapter, store, notifier: recordingNotifier([]) },
+        { execute: true },
+      );
+
+      await engine.runOnce("target-1");
+
+      const record = await store.get("target-1");
+      expect(record?.state).toBe(TargetState.BOOKED);
+      expect(adapter.getBookingPreview).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ id: "late" }),
+      );
+      expect(record?.availabilityDetail?.matched).toBe(true);
+      expect(record?.availabilityDetail?.attempts[0]?.preferredSlots).toBe(0);
+    });
+
+    it("still prefers the exact preferred time when it is open", async () => {
+      const store = new FileTargetStore({ directory: await tempDirectory() });
+      await seedWindowTarget(store);
+      const adapter = windowAdapter(
+        [
+          makeSlot({ id: "late", localTime: "20:30" }),
+          makeSlot({ id: "exact", localTime: "19:00" }),
+          makeSlot({ id: "early", localTime: "18:00" }),
+        ],
+        "exact",
+        "19:00",
+      );
+      const engine = new ControlledBookingEngine(
+        { adapter, store, notifier: recordingNotifier([]) },
+        { execute: true },
+      );
+
+      await engine.runOnce("target-1");
+
+      expect((await store.get("target-1"))?.state).toBe(TargetState.BOOKED);
+      expect(adapter.getBookingPreview).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ id: "exact" }),
+      );
+    });
+
+    it("pauses with a window-based reason when nothing in the window is open", async () => {
+      const store = new FileTargetStore({ directory: await tempDirectory() });
+      await seedWindowTarget(store);
+      const adapter = bookingAdapter({
+        findSlotsDetailed: vi
+          .fn<(target: BookingTarget) => Promise<DetailedAvailability>>()
+          .mockResolvedValue(
+            detailed([], [observed({ localTime: "22:30", withinWindow: false })]),
+          ),
+      });
+      const engine = new ControlledBookingEngine(
+        { adapter, store, notifier: recordingNotifier([]) },
+        { execute: true },
+      );
+
+      await engine.runOnce("target-1");
+
+      const record = await store.get("target-1");
+      expect(record?.state).toBe(TargetState.PAUSED);
+      expect(record?.pauseReason).toContain("No acceptable time in the 18:00-20:30 window");
+      expect(adapter.authorizeBooking).not.toHaveBeenCalled();
+    });
+  });
+
   it("records every observed time, including out-of-window, in the pause detail", async () => {
     const store = new FileTargetStore({ directory: await tempDirectory() });
     await seed(store);

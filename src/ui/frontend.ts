@@ -155,6 +155,7 @@ export const FRONTEND_HTML = String.raw`<!doctype html>
       </label>
     </div>
     <div id="mode-hint" class="hint wide"></div>
+    <label id="accept-window-label" class="check wide"><input name="acceptAnyTimeInWindow" type="checkbox"> Book any open time in the earliest-latest window, closest to the preferred time</label>
     <label id="dining-categories-label" hidden>Extra allowed categories
       <select name="diningCategories" multiple size="4"></select>
     </label>
@@ -894,6 +895,9 @@ function buildTarget() {
   if (form.mode.value === "known-drop" && form.releaseAt.value) {
     target.knownReservationReleaseAt = localInputToIso(form.releaseAt.value, form.timeZone.value);
   }
+  if (form.mode.value === "known-drop" && form.acceptAnyTimeInWindow.checked) {
+    target.acceptAnyTimeInWindow = true;
+  }
   if (form.mode.value === "cancellation-watch" && form.watchStopAt.value) {
     target.cancellationWatchStopAt = localInputToIso(form.watchStopAt.value, form.timeZone.value);
   }
@@ -1138,6 +1142,7 @@ function startEdit(record) {
   form.latest.value = target.timeWindow.latest;
   form.preferred.value = target.timeWindow.preferred;
   form.mode.value = target.mode;
+  form.acceptAnyTimeInWindow.checked = target.acceptAnyTimeInWindow === true;
   form.releaseAt.value = target.knownReservationReleaseAt
     ? toLocalInput(target.knownReservationReleaseAt, target.restaurant.timeZone)
     : "";
@@ -1255,9 +1260,11 @@ function syncModeFields() {
   byId("release-at-label").hidden = !knownDrop;
   form.watchStopAt.disabled = knownDrop;
   byId("watch-stop-at-label").hidden = knownDrop;
+  form.acceptAnyTimeInWindow.disabled = !knownDrop;
+  byId("accept-window-label").hidden = !knownDrop;
   var note = byId("mode-hint");
   note.textContent = knownDrop
-    ? "The scheduler only runs known-drop tasks that have a release time."
+    ? "The scheduler only runs known-drop tasks that have a release time. By default it books only the exact preferred time and pauses otherwise."
     : "The watcher checks every 10 seconds, chooses the closest available time in the window, and auto-books only when Live mode and policy authorize it.";
   note.className = "hint";
 }
