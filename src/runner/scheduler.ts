@@ -106,8 +106,21 @@ export class ReservationScheduler {
   }
 
   async runDueTargets(): Promise<void> {
-    for (const record of await this.store.listRunnable()) {
-      await this.runTarget(record);
+    await this.runTargets(await this.store.listRunnable());
+  }
+
+  /**
+   * Runs the targets concurrently. Drops are contested within a second, so two
+   * targets sharing a release time must each fire at it rather than the second
+   * waiting behind the first one's whole lock-and-submit. One target failing
+   * does not stop the others; the first failure is rethrown once all settle.
+   */
+  async runTargets(records: readonly TargetRecord[]): Promise<void> {
+    const results = await Promise.allSettled(
+      records.map((record) => this.runTarget(record)),
+    );
+    for (const result of results) {
+      if (result.status === "rejected") throw result.reason;
     }
   }
 

@@ -130,7 +130,7 @@ async function main(): Promise<void> {
         console.log("No runnable targets remain.");
         return;
       }
-      for (const record of records) await scheduler.runTarget(record);
+      await scheduler.runTargets(records);
       if (Date.now() >= deadline) {
         console.warn("Scheduler reached its maximum runtime; exiting.");
         return;
