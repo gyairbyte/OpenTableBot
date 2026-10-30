@@ -31,6 +31,7 @@ import {
   AVAILABILITY_PROVIDER_ERRORS_MESSAGE,
   isSlotDiningAreaDiscoveryFailure,
   isTransientAvailabilityHttpFailure,
+  isTransientPageFetchFailure,
 } from "./page-errors.js";
 import type {
   FindSlotsResult,
@@ -78,7 +79,18 @@ function datesInRange(startDate: string, endDate: string): string[] {
   return dates;
 }
 
-export function mapBridgeError(error: unknown): never {
+export interface MapBridgeErrorOptions {
+  /**
+   * Set only for read-only availability calls, where a page-level network
+   * failure is a retryable blip rather than an ambiguous write outcome.
+   */
+  readonly readOnlyPoll?: boolean;
+}
+
+export function mapBridgeError(
+  error: unknown,
+  options: MapBridgeErrorOptions = {},
+): never {
   if (!(error instanceof BridgeClientError)) throw error;
   const category =
     error.code === "OPENTABLE_AUTHENTICATION_REQUIRED"
@@ -121,7 +133,8 @@ export function mapBridgeError(error: unknown): never {
           ? error.message.includes(AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE)
             ? AdapterFailureCategory.BROWSER_NOT_READY
             : error.message.includes(AVAILABILITY_PROVIDER_ERRORS_MESSAGE) ||
-                isTransientAvailabilityHttpFailure(error.message)
+                isTransientAvailabilityHttpFailure(error.message) ||
+                (options.readOnlyPoll === true && isTransientPageFetchFailure(error.message))
               ? AdapterFailureCategory.TRANSIENT_TRANSPORT
               : AdapterFailureCategory.UNEXPECTED_RESPONSE
               : AdapterFailureCategory.UNKNOWN;
@@ -226,7 +239,7 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
           databaseRegion: this.options.databaseRegion ?? "NA",
         });
       } catch (error) {
-        mapBridgeError(error);
+        mapBridgeError(error, { readOnlyPoll: true });
       }
       const normalized = normalizeAvailabilityObservation(
         {
@@ -284,7 +297,7 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
             skippedSlots.push(error.message);
             continue;
           }
-          mapBridgeError(error);
+          mapBridgeError(error, { readOnlyPoll: true });
         }
         discoveredSlots += 1;
         if (discovered.candidates.length === 0) {

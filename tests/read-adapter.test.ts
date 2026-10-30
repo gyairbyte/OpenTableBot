@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AuthenticationStatus, OpenTableReadAdapter } from "../src/opentable/adapter.js";
 import { AdapterFailureCategory, type OpenTableAdapterError } from "../src/opentable/errors.js";
 import type { OpenTableBridgeClientPort } from "../src/opentable/bridge/read-adapter.js";
-import { BrowserBridgeOpenTableReadAdapter } from "../src/opentable/bridge/read-adapter.js";
+import { BrowserBridgeOpenTableReadAdapter, mapBridgeError } from "../src/opentable/bridge/read-adapter.js";
 import { BridgeClientError } from "../src/opentable/bridge/client.js";
 import {
   AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE,
@@ -192,6 +192,11 @@ describe("BrowserBridgeOpenTableReadAdapter", () => {
     ],
     [
       "PAGE_OPERATION_UNAVAILABLE",
+      "Failed to fetch (www.opentable.com)",
+      AdapterFailureCategory.TRANSIENT_TRANSPORT,
+    ],
+    [
+      "PAGE_OPERATION_UNAVAILABLE",
       "RestaurantsAvailability HTTP 403; replay diff: restaurantIds [number]->[number]",
       AdapterFailureCategory.UNEXPECTED_RESPONSE,
     ],
@@ -208,6 +213,13 @@ describe("BrowserBridgeOpenTableReadAdapter", () => {
     }
     const adapter = new BrowserBridgeOpenTableReadAdapter(new FailingClient());
     await expect(adapter.findSlots(makeTarget())).rejects.toMatchObject({ category });
+  });
+
+  it("keeps a bare page fetch failure non-retryable outside read-only polling", () => {
+    const failure = new BridgeClientError("PAGE_OPERATION_UNAVAILABLE", "Failed to fetch (www.opentable.com)");
+    expect(() => mapBridgeError(failure)).toThrowError(
+      expect.objectContaining({ category: AdapterFailureCategory.UNEXPECTED_RESPONSE }),
+    );
   });
 
   it.each([

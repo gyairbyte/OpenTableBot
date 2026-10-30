@@ -30,6 +30,20 @@ export function isTransientAvailabilityHttpFailure(message: string): boolean {
 }
 
 /**
+ * When the page's own `fetch` cannot reach OpenTable at all (dropped Wi-Fi,
+ * DNS hiccup, a brief upstream reset) Chrome rejects with
+ * `TypeError: Failed to fetch`, which the page forwards as the bare message.
+ * No provider response exists to inspect, so a read-only availability poll
+ * should simply try again on the next tick. Callers must only apply this to
+ * read paths: after a lock or submission dispatch the same text is ambiguous.
+ */
+const PAGE_FETCH_NETWORK_FAILURE_PATTERN = /^Failed to fetch\b/;
+
+export function isTransientPageFetchFailure(message: string): boolean {
+  return PAGE_FETCH_NETWORK_FAILURE_PATTERN.test(message.trim());
+}
+
+/**
  * Dining-area discovery raises `BOOKING_PREVIEW_DINING_AREA_UNKNOWN` or
  * `BOOKING_PREVIEW_DINING_AREA_CONFLICT` when the booking-details response for
  * one slot cannot establish an exact dining area. That is a property of that
