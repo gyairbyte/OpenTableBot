@@ -323,8 +323,12 @@ Pass `-DryRun` when registering a non-submitting task.
 You do not have to keep Chrome or the bridge open. The registered task starts
 `run-scheduled.ps1` `WarmUpSeconds` before the release time, and that script:
 
-1. opens the restaurant page in your normal signed-in Chrome profile, which
-   also starts the MV3 service worker so the extension reconnects to the bridge;
+1. opens the restaurant page in the Chrome profile that has the extension
+   loaded, found by matching the extension's path in each profile's settings
+   (renaming a profile changes nothing; pass `-ChromeProfile Default` to force
+   one). That also starts the MV3 service worker so the extension reconnects to
+   the bridge. A bare `chrome.exe <url>` would open Chrome's last-used profile,
+   which may not be the one with the extension;
 2. starts the local bridge if nothing is listening on the bridge port;
 3. runs the scheduler, which waits for readiness before the drop.
 
