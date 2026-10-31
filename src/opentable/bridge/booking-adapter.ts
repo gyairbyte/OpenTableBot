@@ -3,7 +3,11 @@ import { evaluateBookingPreview } from "../../domain/booking-policy.js";
 import type { BookingPreview, ReservationSlot } from "../../domain/reservation-slot.js";
 import type {
   AuthenticationStatus,
+  BaseAvailability,
   BookingSubmissionResult,
+  DiningAreaDiscovery,
+  DiscoverableSlot,
+  LazyDiningAreaDiscovery,
   OpenTableBookingAdapter,
   PreparedBooking,
   RestaurantSearchQuery,
@@ -85,7 +89,9 @@ function samePreview(left: BookingPreview, right: BookingPreview): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-export class BrowserBridgeOpenTableBookingAdapter implements OpenTableBookingAdapter {
+export class BrowserBridgeOpenTableBookingAdapter
+  implements OpenTableBookingAdapter, LazyDiningAreaDiscovery
+{
   private readonly read: BrowserBridgeOpenTableReadAdapter;
   private readonly preparedIntents = new Map<string, BookingIntent>();
   private readonly observedPreviews = new Map<string, BookingPreview>();
@@ -103,6 +109,15 @@ export class BrowserBridgeOpenTableBookingAdapter implements OpenTableBookingAda
   checkAuthentication(): Promise<AuthenticationStatus> { return this.read.checkAuthentication(); }
   findSlots(target: BookingTarget): Promise<readonly ReservationSlot[]> { return this.read.findSlots(target); }
   findSlotsDetailed(target: BookingTarget) { return this.read.findSlotsDetailed(target); }
+  findBaseSlots(target: BookingTarget): Promise<BaseAvailability> {
+    return this.read.findBaseSlots(target);
+  }
+  discoverDiningAreas(
+    target: BookingTarget,
+    candidate: DiscoverableSlot,
+  ): Promise<DiningAreaDiscovery> {
+    return this.read.discoverDiningAreas(target, candidate);
+  }
   searchRestaurants(query: RestaurantSearchQuery): Promise<SafeSearchResults> {
     return this.read.searchRestaurants(query);
   }

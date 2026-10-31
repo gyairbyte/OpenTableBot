@@ -45,7 +45,8 @@ param(
   [switch]$NoOpenTable,
   [switch]$NoConsole,
   [switch]$HoldOnError,
-  [int]$WaitSeconds = 45
+  [int]$WaitSeconds = 45,
+  [string]$ChromeProfile = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -176,8 +177,9 @@ try {
     if ($null -eq $chrome) {
       $problems.Add("chrome.exe was not found. Open an OpenTable tab manually or install Chrome.")
     } else {
-      Start-Process -FilePath $chrome -ArgumentList "https://www.opentable.com/" | Out-Null
-      Write-Host "Opened https://www.opentable.com/ in Chrome."
+      $chromeArguments = Get-OpenTableChromeArguments -RepoRoot $repo -Url "https://www.opentable.com/" -ChromeProfile $ChromeProfile
+      Start-Process -FilePath $chrome -ArgumentList $chromeArguments | Out-Null
+      Write-Host "Opened https://www.opentable.com/ in Chrome ($($chromeArguments -join ' '))."
     }
   }
 

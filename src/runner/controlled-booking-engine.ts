@@ -1,7 +1,10 @@
 import type {
   AvailabilityAttempt,
   AvailabilityRunDetail,
+  ObservedAvailabilitySlot,
 } from "../domain/availability-detail.js";
+import type { ReservationSlot } from "../domain/reservation-slot.js";
+import { supportsLazyDiscovery } from "../opentable/adapter.js";
 import type { BookingTarget } from "../domain/booking-target.js";
 import {
   RUNNABLE_TARGET_STATES,
@@ -15,12 +18,15 @@ import {
   OpenTableAdapterError,
 } from "../opentable/errors.js";
 import type { TargetRecord } from "../storage/target-store.js";
-import {
-  createBookingPlan,
-  type BookingPlan,
-  type BookingEngine,
-  type BookingEngineDependencies,
+import type {
+  BookingEngine,
+  BookingEngineDependencies,
 } from "./booking-engine.js";
+import {
+  eagerCandidateStream,
+  lazyCandidateStream,
+  type CandidateStream,
+} from "./candidate-stream.js";
 import {
   runControlledBooking,
   type ControlledBookingStage,
@@ -50,6 +56,29 @@ const STAGE_STATES: Readonly<Record<ControlledBookingStage, TargetState>> = {
   revalidating: TargetState.REVALIDATING,
   submitting: TargetState.SUBMITTING,
 };
+
+/**
+ * How many ranked candidates one run will try before giving up. Each attempt
+ * costs several provider round trips, and a drop that has gone this far is
+ * better handed back to a person than hammered.
+ */
+const MAX_CANDIDATE_ATTEMPTS = 5;
+
+/**
+ * Whether a failed attempt may move on to the next-ranked candidate. Only when
+ * no reservation and no lock can exist for the failed slot: before the lock
+ * stage a table that has vanished, or at the lock stage an explicit provider
+ * refusal. Anything ambiguous, and anything at or after a confirmed lock or a
+ * submit, must stop the run so a table is never held or booked twice.
+ */
+function canTryNextCandidate(
+  error: unknown,
+  stage: ControlledBookingStage | undefined,
+): boolean {
+  if (!(error instanceof OpenTableAdapterError)) return false;
+  if (stage === undefined) return error.category === AdapterFailureCategory.SLOT_DISAPPEARED;
+  return stage === "locking" && error.category === AdapterFailureCategory.LOCK_REJECTED;
+}
 
 function describeFailure(error: unknown): string {
   if (error instanceof OpenTableAdapterError) {
@@ -140,19 +169,23 @@ export class ControlledBookingEngine implements BookingEngine {
       await notifier.notify({ type: "state-changed", targetId, from, to });
     };
 
+    // Set once availability has been read, so a pause after that point carries
+    // the evidence as it stood when the run ended, including any times that
+    // were looked up after the first booking attempt.
+    const detailSource: { build?: () => AvailabilityRunDetail } = {};
+
     const pause = async (
       reason: string,
       availabilityDetail?: AvailabilityRunDetail,
     ): Promise<void> => {
       if (!canTransitionTarget(current.state, TargetState.PAUSED)) return;
+      const detail = availabilityDetail ?? detailSource.build?.();
       current = await store.save(
         {
           ...current,
           state: TargetState.PAUSED,
           pauseReason: reason,
-          ...(availabilityDetail === undefined
-            ? {}
-            : { availabilityDetail }),
+          ...(detail === undefined ? {} : { availabilityDetail: detail }),
         },
         current.version,
       );
@@ -195,7 +228,7 @@ export class ControlledBookingEngine implements BookingEngine {
      * transport failure there leaves the submission outcome ambiguous, so the
      * watcher must stop and be inspected rather than quietly book again.
      */
-    const handleFailure = async (error: unknown): Promise<void> => {
+    const handleFailure = async (error: unknown, note = ""): Promise<void> => {
       if (
         target.mode === "cancellation-watch" &&
         error instanceof OpenTableAdapterError &&
@@ -213,7 +246,7 @@ export class ControlledBookingEngine implements BookingEngine {
       ) {
         return;
       }
-      await pause(describeFailure(error));
+      await pause(`${describeFailure(error)}${note}`);
     };
 
     // Moving into WAITING also clears any availability detail left over from
@@ -235,46 +268,86 @@ export class ControlledBookingEngine implements BookingEngine {
         : (this.options.availabilityAttempts ?? 1);
     const availabilityRetryDelayMs = this.options.availabilityRetryDelayMs ?? 250;
     const now = this.options.now ?? (() => Date.now());
-    let plan: BookingPlan = { kind: "no-match" };
-    const attempts: AvailabilityAttempt[] = [];
+    const attemptFacts: Array<{
+      readonly startedAt: string;
+      readonly durationMs: number;
+      readonly acceptable: number;
+      readonly preferred: number;
+      readonly observedSlots: readonly ObservedAvailabilitySlot[];
+    }> = [];
+    let stream: CandidateStream = {
+      next: async () => undefined,
+      stats: () => ({ acceptable: 0, preferred: 0 }),
+      finish: () => undefined,
+    };
+    let observedSlots: readonly ObservedAvailabilitySlot[] = [];
+    let first: ReservationSlot | undefined;
+    const snapshotObserved = (
+      slots: readonly ObservedAvailabilitySlot[],
+    ): readonly ObservedAvailabilitySlot[] =>
+      slots.map((slot) => ({ ...slot, diningAreas: [...slot.diningAreas] }));
     for (let attempt = 1; attempt <= availabilityAttempts; attempt += 1) {
       const startedAtMs = now();
-      let observed;
       try {
-        observed = await adapter.findSlotsDetailed(target);
+        // A watcher accepts any acceptable time inside the window and lets the
+        // ranking pick the one closest to the preferred time. A known-drop run
+        // does the same only when the target opts in with acceptAnyTimeInWindow;
+        // otherwise it considers the exact preferred time only.
+        const streamOptions = { preferredOnly: !acceptsWindow(target) };
+        if (supportsLazyDiscovery(adapter)) {
+          // Look up open times first and establish dining areas one time at a
+          // time, best first, so booking starts without waiting for the rest.
+          const base = await adapter.findBaseSlots(target);
+          observedSlots = base.observedSlots;
+          stream = lazyCandidateStream(adapter, target, base, streamOptions);
+        } else {
+          const observed = await adapter.findSlotsDetailed(target);
+          observedSlots = observed.observedSlots;
+          stream = eagerCandidateStream(target, observed.acceptableSlots, streamOptions);
+        }
+        first = await stream.next();
       } catch (error) {
         await handleFailure(error);
         return;
       }
-      const slots = observed.acceptableSlots;
-      const preferred = slots.filter(
-        (slot) => slot.localTime === target.timeWindow.preferred,
-      );
-      // A watcher accepts any acceptable time inside the window and lets the
-      // existing ranking pick the one closest to the preferred time. A
-      // known-drop run does the same only when the target opts in with
-      // acceptAnyTimeInWindow; otherwise it considers the exact preferred
-      // time only.
-      plan = createBookingPlan(target, acceptsWindow(target) ? slots : preferred);
-      attempts.push({
+      const stats = stream.stats();
+      attemptFacts.push({
         startedAt: new Date(startedAtMs).toISOString(),
         durationMs: Math.max(0, now() - startedAtMs),
-        acceptableSlots: slots.length,
-        preferredSlots: preferred.length,
-        observedSlots: observed.observedSlots,
+        acceptable: stats.acceptable,
+        preferred: stats.preferred,
+        observedSlots: snapshotObserved(observedSlots),
       });
-      if (plan.kind !== "no-match" || attempt === availabilityAttempts) break;
+      if (first !== undefined || attempt === availabilityAttempts) break;
       await new Promise((resolve) => setTimeout(resolve, availabilityRetryDelayMs));
     }
-    const availabilityDetail: AvailabilityRunDetail = {
-      preferredTime: target.timeWindow.preferred,
-      earliest: target.timeWindow.earliest,
-      latest: target.timeWindow.latest,
-      matched: plan.kind !== "no-match",
-      capturedAt: new Date(now()).toISOString(),
-      attempts,
+    // Later times may still be looked up after the first booking attempt, so the
+    // detail is rebuilt from the live stream whenever it is written.
+    const buildDetail = (): AvailabilityRunDetail => {
+      const last = attemptFacts.length - 1;
+      return {
+        preferredTime: target.timeWindow.preferred,
+        earliest: target.timeWindow.earliest,
+        latest: target.timeWindow.latest,
+        matched: first !== undefined,
+        capturedAt: new Date(now()).toISOString(),
+        attempts: attemptFacts.map((fact, index): AvailabilityAttempt => {
+          const live = index === last ? stream.stats() : undefined;
+          return {
+            startedAt: fact.startedAt,
+            durationMs: fact.durationMs,
+            acceptableSlots: live?.acceptable ?? fact.acceptable,
+            preferredSlots: live?.preferred ?? fact.preferred,
+            observedSlots:
+              index === last ? snapshotObserved(observedSlots) : fact.observedSlots,
+          };
+        }),
+      };
     };
-    if (plan.kind === "no-match") {
+    detailSource.build = buildDetail;
+    if (first === undefined) {
+      stream.finish();
+      const availabilityDetail = buildDetail();
       // The watcher keeps its scan evidence while it stays armed, so the
       // console can show what the most recent poll actually saw.
       if (
@@ -286,55 +359,100 @@ export class ControlledBookingEngine implements BookingEngine {
       await pause(
         target.mode === "cancellation-watch"
           ? `Watcher found no acceptable time in ${target.timeWindow.earliest}-${target.timeWindow.latest} after ${availabilityAttempts} availability attempt(s)`
-          : describeNoMatch(target, attempts, availabilityAttempts),
+          : describeNoMatch(target, availabilityDetail.attempts, availabilityAttempts),
         availabilityDetail,
       );
       return;
     }
 
-    await move(TargetState.MATCH_FOUND, { availabilityDetail });
+    await move(TargetState.MATCH_FOUND, { availabilityDetail: buildDetail() });
     await move(TargetState.VALIDATING);
 
-    try {
-      const result = await runControlledBooking(adapter, target, plan.selected, {
-        execute,
-        onStage: async (stage) => {
-          await move(STAGE_STATES[stage]);
-        },
-      });
-      if (result.status === "dry-run") {
-        // A Dry Run watcher neither locks nor submits, so there is nothing to
-        // inspect and pausing would end a watch the operator asked to keep.
-        if (
-          target.mode === "cancellation-watch" &&
-          (await resumeWatching({ availabilityDetail }))
-        ) {
+    // Try the best candidate; if it is gone, move to the next-ranked one. Only a
+    // failure that provably left no lock or reservation behind may do so.
+    const progress: { stage: ControlledBookingStage | undefined } = { stage: undefined };
+    let slot: ReservationSlot | undefined = first;
+    let tried = 0;
+    while (slot !== undefined) {
+      tried += 1;
+      progress.stage = undefined;
+      try {
+        const result = await runControlledBooking(adapter, target, slot, {
+          execute,
+          onStage: async (stage) => {
+            progress.stage = stage;
+            await move(STAGE_STATES[stage]);
+          },
+        });
+        stream.finish();
+        if (result.status === "dry-run") {
+          // A Dry Run watcher neither locks nor submits, so there is nothing to
+          // inspect and pausing would end a watch the operator asked to keep.
+          if (
+            target.mode === "cancellation-watch" &&
+            (await resumeWatching({ availabilityDetail: buildDetail() }))
+          ) {
+            return;
+          }
+          await pause("Dry run completed; no reservation was created");
           return;
         }
-        await pause("Dry run completed; no reservation was created");
-        return;
-      }
-      if (result.submission.status === "confirmed") {
-        await move(TargetState.BOOKED, {
-          confirmation: result.submission.confirmation,
+        if (result.submission.status === "confirmed") {
+          await move(TargetState.BOOKED, {
+            confirmation: result.submission.confirmation,
+            availabilityDetail: buildDetail(),
+          });
+          await notifier.notify({
+            type: "booking-confirmed",
+            targetId,
+            confirmation: result.submission.confirmation,
+          });
+          return;
+        }
+        await move(TargetState.OUTCOME_UNKNOWN, {
+          pauseReason: result.submission.message,
+          availabilityDetail: buildDetail(),
         });
         await notifier.notify({
-          type: "booking-confirmed",
+          type: "target-paused",
           targetId,
-          confirmation: result.submission.confirmation,
+          reason: result.submission.message,
         });
         return;
+      } catch (error) {
+        let next: ReservationSlot | undefined;
+        if (tried < MAX_CANDIDATE_ATTEMPTS && canTryNextCandidate(error, progress.stage)) {
+          try {
+            next = await stream.next();
+          } catch (discoveryError) {
+            stream.finish();
+            await handleFailure(discoveryError);
+            return;
+          }
+        }
+        if (next === undefined) {
+          stream.finish();
+          await handleFailure(
+            error,
+            tried > 1 ? ` (after trying ${tried} candidate times)` : "",
+          );
+          return;
+        }
+        try {
+          // A rejected lock leaves the target in LOCKING; route it back to
+          // VALIDATING through the transitions the state machine defines.
+          if (progress.stage === "locking") {
+            await move(TargetState.SLOT_LOST);
+            await move(TargetState.WAITING);
+            await move(TargetState.MATCH_FOUND);
+            await move(TargetState.VALIDATING);
+          }
+        } catch (stateError) {
+          await handleFailure(stateError);
+          return;
+        }
+        slot = next;
       }
-      await move(TargetState.OUTCOME_UNKNOWN, {
-        pauseReason: result.submission.message,
-      });
-      await notifier.notify({
-        type: "target-paused",
-        targetId,
-        reason: result.submission.message,
-      });
-    } catch (error) {
-      await handleFailure(error);
     }
   }
 }

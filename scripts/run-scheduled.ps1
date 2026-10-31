@@ -28,7 +28,8 @@ param(
   [int]$WarmUpSeconds = 180,
   [int]$ReadinessSeconds = 180,
   [int]$AvailabilityAttempts = 1,
-  [int]$AvailabilityRetryDelayMs = 250
+  [int]$AvailabilityRetryDelayMs = 250,
+  [string]$ChromeProfile = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,8 +50,9 @@ $chrome = Find-OpenTableChrome
 if ($null -eq $chrome) {
   throw "chrome.exe was not found in the standard install locations."
 }
-Start-Process -FilePath $chrome -ArgumentList $RestaurantUrl | Out-Null
-Write-Host "Opened $RestaurantUrl in Chrome."
+$chromeArguments = Get-OpenTableChromeArguments -RepoRoot $repo -Url $RestaurantUrl -ChromeProfile $ChromeProfile
+Start-Process -FilePath $chrome -ArgumentList $chromeArguments | Out-Null
+Write-Host "Opened $RestaurantUrl in Chrome ($($chromeArguments -join ' '))."
 
 # 2. Ensure the local bridge is running. The scheduler reads the same port from
 #    the environment, so set it before either process starts.

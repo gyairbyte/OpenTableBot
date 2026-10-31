@@ -1,8 +1,5 @@
 import { createHash } from "node:crypto";
-import type {
-  DetailedAvailability,
-  ObservedAvailabilitySlot,
-} from "../../domain/availability-detail.js";
+import type { DetailedAvailability } from "../../domain/availability-detail.js";
 import type { BookingTarget } from "../../domain/booking-target.js";
 import type {
   BookingPreview,
@@ -10,6 +7,11 @@ import type {
 } from "../../domain/reservation-slot.js";
 import type {
   AuthenticationStatus,
+  BaseAvailability,
+  DiningAreaDiscovery,
+  DiscoverableSlot,
+  LazyDiningAreaDiscovery,
+  ObservationRecord,
   OpenTableReadAdapter,
   RestaurantSearchQuery,
 } from "../adapter.js";
@@ -30,6 +32,7 @@ import {
   AVAILABILITY_OPERATION_NOT_OBSERVED_MESSAGE,
   AVAILABILITY_PROVIDER_ERRORS_MESSAGE,
   isSlotDiningAreaDiscoveryFailure,
+  isSlotNoLongerOfferedFailure,
   isTransientAvailabilityHttpFailure,
   isTransientPageFetchFailure,
 } from "./page-errors.js";
@@ -141,7 +144,9 @@ export function mapBridgeError(
   throw new OpenTableAdapterError(category, error.message, { cause: error });
 }
 
-export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
+export class BrowserBridgeOpenTableReadAdapter
+  implements OpenTableReadAdapter, LazyDiningAreaDiscovery
+{
   constructor(
     private readonly client: OpenTableBridgeClientPort,
     private readonly options: BrowserBridgeReadAdapterOptions = {},
@@ -187,9 +192,13 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
     return (await this.findSlotsDetailed(target)).acceptableSlots;
   }
 
-  async findSlotsDetailed(
-    target: BookingTarget,
-  ): Promise<DetailedAvailability> {
+  /**
+   * Looks up open times and applies every check except dining-area policy. The
+   * returned candidates carry a preview reference but no exact dining area yet;
+   * `discoverDiningAreas` establishes that for one time at a time, so a run can
+   * start on the best time without waiting for every other time's lookup.
+   */
+  async findBaseSlots(target: BookingTarget): Promise<BaseAvailability> {
     const authentication = await this.checkAuthentication();
     if (!authentication.authenticated) {
       throw new OpenTableAdapterError(
@@ -200,21 +209,16 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
       );
     }
 
-    const normalizedSlots: ReservationSlot[] = [];
-    const observedSlots = new Map<string, ObservedAvailabilitySlot & {
-      diningAreas: string[];
-      diningAreaIssue?: string;
-    }>();
-    let discoveredSlots = 0;
-    const skippedSlots: string[] = [];
+    const candidates: DiscoverableSlot[] = [];
+    const observedSlots = new Map<string, ObservationRecord>();
     const observeSlot = (
       slot: ReservationSlot,
       rejectionReasons: readonly SlotRejectionReason[],
-    ): ObservedAvailabilitySlot & { diningAreas: string[]; diningAreaIssue?: string } => {
+    ): ObservationRecord => {
       const key = `${slot.localDate}|${slot.localTime}|${slot.seatingType}|${slot.reservationKind.kind}`;
       const existing = observedSlots.get(key);
       if (existing !== undefined) return existing;
-      const observation: ObservedAvailabilitySlot & { diningAreas: string[]; diningAreaIssue?: string } = {
+      const observation: ObservationRecord = {
         localDate: slot.localDate,
         localTime: slot.localTime,
         seatingType: slot.seatingType,
@@ -271,62 +275,91 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
           );
           continue;
         }
-        let discovered: ListDiningAreasResult;
-        try {
-          discovered = await this.client.listDiningAreas({
-            baseSlotId: slot.id,
-            previewReference: slot.previewReference,
-            restaurantId: slot.restaurantId,
-            date: slot.localDate,
-            time: slot.localTime,
-            partySize: slot.partySize,
-            seatingType: slot.seatingType,
-            reservationKind: slot.reservationKind.kind === "experience"
-              ? { kind: "experience", experienceId: slot.reservationKind.experienceId }
-              : slot.reservationKind,
-          });
-        } catch (error) {
-          // One slot whose details cannot establish an exact dining area must
-          // not discard every other slot in the scan. The slot stays
-          // observed but is never offered for booking.
-          if (error instanceof BridgeClientError && isSlotDiningAreaDiscoveryFailure(error.message)) {
-            this.options.onDiagnostic?.(
-              `Slot ${slot.localDate} ${slot.localTime} ${slot.seatingType} skipped: ${error.message}`,
-            );
-            observation.diningAreaIssue = error.message.replace(/\s+/gu, " ").trim().slice(0, 300);
-            skippedSlots.push(error.message);
-            continue;
-          }
-          mapBridgeError(error, { readOnlyPoll: true });
-        }
-        discoveredSlots += 1;
-        if (discovered.candidates.length === 0) {
-          this.options.onDiagnostic?.(
-            `Slot ${slot.localDate} ${slot.localTime} ${slot.seatingType} produced no exact dining-area candidates`,
-          );
-        }
-        for (const candidate of discovered.candidates) {
-          const digest = createHash("sha256")
-            .update(`${slot.id}|${candidate.diningArea.category}|${candidate.diningArea.label}|${candidate.diningArea.providerOrder}`)
-            .digest("hex")
-            .slice(0, 20);
-          const exactCandidate: ReservationSlot = {
-            ...slot,
-            id: `ot-area-${digest}`,
-            previewReference: candidate.previewReference,
-            diningArea: candidate.diningArea,
-          };
-          if (isSlotAcceptable(target, exactCandidate)) {
-            normalizedSlots.push(exactCandidate);
-            if (!observation.diningAreas.includes(candidate.diningArea.label)) {
-              observation.diningAreas.push(candidate.diningArea.label);
-            }
-          }
-        }
+        candidates.push({ slot, observation });
       }
       for (const diagnostic of normalized.diagnostics) {
         this.options.onDiagnostic?.(`Unknown seating label normalized to other: ${diagnostic.label}`);
       }
+    }
+    return { candidates, observedSlots: [...observedSlots.values()] };
+  }
+
+  /**
+   * Establishes the exact dining areas of one time. A time whose details cannot
+   * establish an exact area is skipped, never offered for booking, and does not
+   * discard the rest of the scan.
+   */
+  async discoverDiningAreas(
+    target: BookingTarget,
+    candidate: DiscoverableSlot,
+  ): Promise<DiningAreaDiscovery> {
+    const { slot, observation } = candidate;
+    let discovered: ListDiningAreasResult;
+    try {
+      discovered = await this.client.listDiningAreas({
+        baseSlotId: slot.id,
+        previewReference: slot.previewReference ?? "",
+        restaurantId: slot.restaurantId,
+        date: slot.localDate,
+        time: slot.localTime,
+        partySize: slot.partySize,
+        seatingType: slot.seatingType,
+        reservationKind: slot.reservationKind.kind === "experience"
+          ? { kind: "experience", experienceId: slot.reservationKind.experienceId }
+          : slot.reservationKind,
+      });
+    } catch (error) {
+      if (error instanceof BridgeClientError && isSlotDiningAreaDiscoveryFailure(error.message)) {
+        this.options.onDiagnostic?.(
+          `Slot ${slot.localDate} ${slot.localTime} ${slot.seatingType} skipped: ${error.message}`,
+        );
+        observation.diningAreaIssue = error.message.replace(/\s+/gu, " ").trim().slice(0, 300);
+        return { slots: [], skippedReason: error.message };
+      }
+      mapBridgeError(error, { readOnlyPoll: true });
+    }
+    if (discovered.candidates.length === 0) {
+      this.options.onDiagnostic?.(
+        `Slot ${slot.localDate} ${slot.localTime} ${slot.seatingType} produced no exact dining-area candidates`,
+      );
+    }
+    const slots: ReservationSlot[] = [];
+    for (const found of discovered.candidates) {
+      const digest = createHash("sha256")
+        .update(`${slot.id}|${found.diningArea.category}|${found.diningArea.label}|${found.diningArea.providerOrder}`)
+        .digest("hex")
+        .slice(0, 20);
+      const exactCandidate: ReservationSlot = {
+        ...slot,
+        id: `ot-area-${digest}`,
+        previewReference: found.previewReference,
+        diningArea: found.diningArea,
+      };
+      if (isSlotAcceptable(target, exactCandidate)) {
+        slots.push(exactCandidate);
+        if (!observation.diningAreas.includes(found.diningArea.label)) {
+          observation.diningAreas.push(found.diningArea.label);
+        }
+      }
+    }
+    return { slots };
+  }
+
+  async findSlotsDetailed(
+    target: BookingTarget,
+  ): Promise<DetailedAvailability> {
+    const base = await this.findBaseSlots(target);
+    const normalizedSlots: ReservationSlot[] = [];
+    let discoveredSlots = 0;
+    const skippedSlots: string[] = [];
+    for (const candidate of base.candidates) {
+      const discovery = await this.discoverDiningAreas(target, candidate);
+      if (discovery.skippedReason !== undefined) {
+        skippedSlots.push(discovery.skippedReason);
+        continue;
+      }
+      discoveredSlots += 1;
+      normalizedSlots.push(...discovery.slots);
     }
     // Skipping tolerates a few odd slots. When every slot that reached
     // discovery was skipped the problem is systematic (for example the
@@ -342,7 +375,7 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
       acceptableSlots: [
         ...new Map(normalizedSlots.map((slot) => [slot.id, slot])).values(),
       ],
-      observedSlots: [...observedSlots.values()].map((observation) => ({
+      observedSlots: base.observedSlots.map((observation) => ({
         ...observation,
         diningAreas: [...observation.diningAreas],
       })),
@@ -394,6 +427,16 @@ export class BrowserBridgeOpenTableReadAdapter implements OpenTableReadAdapter {
             : slot.reservationKind,
       });
     } catch (error) {
+      // A time that discovery just found, but whose booking details now offer
+      // no dining area at all, has been taken since. That is a vanished slot a
+      // booking run can move past, not an unexpected provider response.
+      if (error instanceof BridgeClientError && isSlotNoLongerOfferedFailure(error.message)) {
+        throw new OpenTableAdapterError(
+          AdapterFailureCategory.SLOT_DISAPPEARED,
+          error.message,
+          { cause: error },
+        );
+      }
       mapBridgeError(error);
     }
     return normalizeBookingPreview(result, target, slot);
