@@ -9,6 +9,10 @@ import type {
 import type {
   AuthenticationStatus,
   BookingSubmissionResult,
+  DiningAreaDiscovery,
+  DiscoverableSlot,
+  LazyDiningAreaDiscovery,
+  ObservationRecord,
   OpenTableBookingAdapter,
   PreparedBooking,
 } from "../src/opentable/adapter.js";
@@ -836,5 +840,303 @@ describe("ControlledBookingEngine", () => {
     const record = await store.get("target-1");
     expect(record?.state).toBe(TargetState.PAUSED);
     expect(record?.pauseReason).toContain("LOCK_NOT_DISPATCHED");
+  });
+
+  describe("trying the next-ranked candidate", () => {
+    function windowTarget(): BookingTarget {
+      return makeTarget({
+        acceptAnyTimeInWindow: true,
+        timeWindow: { earliest: "18:00", latest: "20:00", preferred: "19:00" },
+      });
+    }
+
+    function slotAt(time: string): ReservationSlot {
+      return makeSlot({
+        id: `slot-${time}`,
+        localTime: time,
+        startsAt: `2026-09-01T${time}:00-04:00`,
+      });
+    }
+
+    function previewFor(slot: ReservationSlot): BookingPreview {
+      return makePreview({ slotId: slot.id, localTime: slot.localTime });
+    }
+
+    function preparedFor(slot: ReservationSlot): PreparedBooking {
+      return {
+        preview: previewFor(slot),
+        bookingHandle: "00000000-0000-4000-8000-000000000010",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      };
+    }
+
+    const vanished = (): OpenTableAdapterError =>
+      new OpenTableAdapterError(
+        AdapterFailureCategory.SLOT_DISAPPEARED,
+        "the table has been taken",
+      );
+
+    function adapterFor(
+      slots: readonly ReservationSlot[],
+      overrides: Partial<OpenTableBookingAdapter> = {},
+    ): OpenTableBookingAdapter {
+      return bookingAdapter({
+        findSlotsDetailed: vi
+          .fn<(target: BookingTarget) => Promise<DetailedAvailability>>()
+          .mockResolvedValue(detailed(slots)),
+        getBookingPreview: vi.fn(
+          async (_target: BookingTarget, slot: ReservationSlot) => previewFor(slot),
+        ),
+        prepareBooking: vi.fn(
+          async (
+            _target: BookingTarget,
+            slot: ReservationSlot,
+          ): Promise<PreparedBooking> => preparedFor(slot),
+        ),
+        ...overrides,
+      });
+    }
+
+    async function run(
+      adapter: OpenTableBookingAdapter,
+      events: Notification[] = [],
+    ): Promise<{ record: TargetRecord | undefined }> {
+      const store = new FileTargetStore({ directory: await tempDirectory() });
+      await seed(store, { target: windowTarget() });
+      const engine = new ControlledBookingEngine(
+        { adapter, store, notifier: recordingNotifier(events) },
+        { execute: true },
+      );
+      await engine.runOnce("target-1");
+      return { record: await store.get("target-1") };
+    }
+
+    it("moves on when the best table has vanished before locking", async () => {
+      const best = slotAt("19:00");
+      const next = slotAt("19:15");
+      const adapter = adapterFor([next, best], {
+        getBookingPreview: vi.fn(
+          async (_target: BookingTarget, slot: ReservationSlot) => {
+            if (slot.id === best.id) throw vanished();
+            return previewFor(slot);
+          },
+        ),
+      });
+
+      const { record } = await run(adapter);
+
+      expect(record?.state).toBe(TargetState.BOOKED);
+      expect(adapter.authorizeBooking).toHaveBeenCalledTimes(1);
+      expect(adapter.authorizeBooking).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ id: next.id }),
+        expect.anything(),
+      );
+    });
+
+    it("moves on when the provider refuses the lock, through the defined states", async () => {
+      const best = slotAt("19:00");
+      const next = slotAt("19:15");
+      const events: Notification[] = [];
+      const adapter = adapterFor([best, next], {
+        prepareBooking: vi.fn(
+          async (
+            _target: BookingTarget,
+            slot: ReservationSlot,
+          ): Promise<PreparedBooking> => {
+            if (slot.id === best.id) {
+              throw new OpenTableAdapterError(
+                AdapterFailureCategory.LOCK_REJECTED,
+                "the provider refused the lock",
+              );
+            }
+            return preparedFor(slot);
+          },
+        ),
+      });
+
+      const { record } = await run(adapter, events);
+
+      expect(record?.state).toBe(TargetState.BOOKED);
+      expect(adapter.book).toHaveBeenCalledTimes(1);
+      const transitions = events.flatMap((event) =>
+        event.type === "state-changed" ? [`${event.from}>${event.to}`] : [],
+      );
+      expect(transitions).toEqual([
+        "ARMED>WAITING",
+        "WAITING>MATCH_FOUND",
+        "MATCH_FOUND>VALIDATING",
+        "VALIDATING>LOCKING",
+        "LOCKING>SLOT_LOST",
+        "SLOT_LOST>WAITING",
+        "WAITING>MATCH_FOUND",
+        "MATCH_FOUND>VALIDATING",
+        "VALIDATING>LOCKING",
+        "LOCKING>LOCKED",
+        "LOCKED>REVALIDATING",
+        "REVALIDATING>SUBMITTING",
+        "SUBMITTING>BOOKED",
+      ]);
+    });
+
+    it("does not move on after a lock whose outcome is unknown", async () => {
+      const adapter = adapterFor([slotAt("19:00"), slotAt("19:15")], {
+        prepareBooking: vi.fn().mockRejectedValue(
+          new OpenTableAdapterError(
+            AdapterFailureCategory.LOCK_OUTCOME_UNKNOWN,
+            "the bridge dropped after dispatch",
+          ),
+        ),
+      });
+
+      const { record } = await run(adapter);
+
+      expect(record?.state).toBe(TargetState.PAUSED);
+      expect(record?.pauseReason).toContain("LOCK_OUTCOME_UNKNOWN");
+      expect(adapter.authorizeBooking).toHaveBeenCalledTimes(1);
+      expect(adapter.prepareBooking).toHaveBeenCalledTimes(1);
+    });
+
+    it("never books a second table after a submission outcome is unknown", async () => {
+      const adapter = adapterFor([slotAt("19:00"), slotAt("19:15")], {
+        book: vi.fn().mockResolvedValue({
+          status: "outcome-unknown",
+          message: "the submission could not be confirmed",
+        } satisfies BookingSubmissionResult),
+      });
+
+      const { record } = await run(adapter);
+
+      expect(record?.state).toBe(TargetState.OUTCOME_UNKNOWN);
+      expect(adapter.prepareBooking).toHaveBeenCalledTimes(1);
+      expect(adapter.book).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not move on from a booking-policy rejection", async () => {
+      const adapter = adapterFor([slotAt("19:00"), slotAt("19:15")], {
+        getBookingPreview: vi.fn(
+          async (_target: BookingTarget, slot: ReservationSlot) =>
+            makePreview({ slotId: slot.id, localTime: slot.localTime, isAmbiguous: true }),
+        ),
+      });
+
+      const { record } = await run(adapter);
+
+      expect(record?.state).toBe(TargetState.PAUSED);
+      expect(record?.pauseReason).toContain("POLICY_REJECTED");
+      expect(adapter.getBookingPreview).toHaveBeenCalledTimes(1);
+    });
+
+    it("pauses and says how many candidates were tried when all are gone", async () => {
+      const adapter = adapterFor(
+        [slotAt("19:00"), slotAt("19:15"), slotAt("19:30")],
+        { getBookingPreview: vi.fn().mockRejectedValue(vanished()) },
+      );
+
+      const { record } = await run(adapter);
+
+      expect(record?.state).toBe(TargetState.PAUSED);
+      expect(record?.pauseReason).toContain("SLOT_DISAPPEARED");
+      expect(record?.pauseReason).toContain("after trying 3 candidate times");
+      expect(adapter.authorizeBooking).not.toHaveBeenCalled();
+    });
+
+    it("stops after five candidates rather than working through every time", async () => {
+      const adapter = adapterFor(
+        ["18:00", "18:15", "18:30", "18:45", "19:00", "19:15", "19:30"].map(slotAt),
+        { getBookingPreview: vi.fn().mockRejectedValue(vanished()) },
+      );
+
+      const { record } = await run(adapter);
+
+      expect(record?.state).toBe(TargetState.PAUSED);
+      expect(adapter.getBookingPreview).toHaveBeenCalledTimes(5);
+      expect(record?.pauseReason).toContain("after trying 5 candidate times");
+    });
+
+    describe("with lazy dining-area discovery", () => {
+      function lazyAdapterFor(
+        times: readonly string[],
+        overrides: Partial<OpenTableBookingAdapter> = {},
+      ): {
+        readonly adapter: OpenTableBookingAdapter & LazyDiningAreaDiscovery;
+        readonly discover: ReturnType<typeof vi.fn>;
+      } {
+        const candidates: DiscoverableSlot[] = times.map((time) => {
+          const observation: ObservationRecord = {
+            ...observed({ localTime: time }),
+            diningAreas: [],
+          };
+          return {
+            slot: makeSlot({ id: `base-${time}`, localTime: time }),
+            observation,
+          };
+        });
+        const discover = vi.fn(
+          async (
+            _target: BookingTarget,
+            candidate: DiscoverableSlot,
+          ): Promise<DiningAreaDiscovery> => {
+            candidate.observation.diningAreas.push("Dining Room");
+            return { slots: [slotAt(candidate.slot.localTime)] };
+          },
+        );
+        const lazy: LazyDiningAreaDiscovery = {
+          findBaseSlots: vi.fn(async () => ({
+            candidates,
+            observedSlots: candidates.map((candidate) => candidate.observation),
+          })),
+          discoverDiningAreas: discover,
+        };
+        const adapter = Object.assign(
+          adapterFor([], {
+            findSlotsDetailed: vi.fn().mockRejectedValue(new Error("eager lookup used")),
+            ...overrides,
+          }),
+          lazy,
+        );
+        return { adapter, discover };
+      }
+
+      it("looks up only the best time's dining area when it books", async () => {
+        const { adapter, discover } = lazyAdapterFor(["20:00", "19:15", "19:00"]);
+
+        const { record } = await run(adapter);
+
+        expect(record?.state).toBe(TargetState.BOOKED);
+        expect(discover).toHaveBeenCalledTimes(1);
+        expect(discover.mock.calls[0]?.[1]).toMatchObject({
+          slot: { localTime: "19:00" },
+        });
+        const detail = record?.availabilityDetail?.attempts[0]?.observedSlots ?? [];
+        const byTime = new Map(detail.map((slot) => [slot.localTime, slot]));
+        expect(byTime.get("19:00")?.diningAreas).toEqual(["Dining Room"]);
+        expect(byTime.get("19:15")?.diningAreaIssue).toContain("Not checked");
+        expect(byTime.get("20:00")?.diningAreaIssue).toContain("Not checked");
+      });
+
+      it("looks up the next time only once the best one is gone", async () => {
+        const { adapter, discover } = lazyAdapterFor(["20:00", "19:15", "19:00"], {
+          getBookingPreview: vi.fn(
+            async (_target: BookingTarget, slot: ReservationSlot) => {
+              if (slot.localTime === "19:00") throw vanished();
+              return previewFor(slot);
+            },
+          ),
+        });
+
+        const { record } = await run(adapter);
+
+        expect(record?.state).toBe(TargetState.BOOKED);
+        expect(
+          discover.mock.calls.map((call) => (call[1] as DiscoverableSlot).slot.localTime),
+        ).toEqual(["19:00", "19:15"]);
+        expect(adapter.authorizeBooking).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ localTime: "19:15" }),
+          expect.anything(),
+        );
+      });
+    });
   });
 });

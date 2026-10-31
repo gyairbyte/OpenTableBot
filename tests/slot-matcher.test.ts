@@ -3,6 +3,7 @@ import {
   getSlotRejectionReasons,
   isSlotAcceptable,
   rankAcceptableSlots,
+  rankBaseSlots,
   SlotRejectionReason,
 } from "../src/domain/slot-matcher.js";
 import { makeSlot, makeTarget } from "./fixtures.js";
@@ -127,5 +128,29 @@ describe("slot ranking", () => {
     ]);
 
     expect(ranked.map(({ id }) => id)).toEqual(["bar-near", "standard-far"]);
+  });
+});
+
+describe("rankBaseSlots", () => {
+  it("orders time-level slots by distance from the preferred time without filtering", () => {
+    const ranked = rankBaseSlots(makeTarget(), [
+      makeSlot({ id: "far", localTime: "20:00" }),
+      makeSlot({ id: "exact", localTime: "19:00" }),
+      makeSlot({ id: "outside-window", localTime: "23:00" }),
+      makeSlot({ id: "near", localTime: "19:15" }),
+    ]);
+
+    expect(ranked.map(({ id }) => id)).toEqual(["exact", "near", "far", "outside-window"]);
+  });
+
+  it("breaks a distance tie by the earlier time, then Standard seating, then id", () => {
+    const ranked = rankBaseSlots(makeTarget(), [
+      makeSlot({ id: "after", localTime: "19:15" }),
+      makeSlot({ id: "before", localTime: "18:45" }),
+      makeSlot({ id: "z-bar", seatingType: "bar", localTime: "19:30" }),
+      makeSlot({ id: "a-standard", seatingType: "standard", localTime: "19:30" }),
+    ]);
+
+    expect(ranked.map(({ id }) => id)).toEqual(["before", "after", "a-standard", "z-bar"]);
   });
 });

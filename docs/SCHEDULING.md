@@ -19,6 +19,19 @@ deliberately relaxes the first two, and only those two; see
   nearby time. A target can opt out of this with `acceptAnyTimeInWindow`; see
   [Booking any time in the window](#booking-any-time-in-the-window).
 - It runs **once**. There is no post-drop retry loop.
+- It looks up dining areas **lazily**. One availability call lists the open
+  times, which are ranked by distance from the preferred time. Only the best
+  time's dining area is established before the first booking attempt, and each
+  later time is looked up only if the one before it is gone. A drop therefore
+  starts booking after about one dining-area lookup, not after a lookup for
+  every open time.
+- If the best table is gone when it is previewed or locked, the run moves on to
+  the next-ranked table, up to five in all. It does so only when no lock and no
+  reservation can exist for the failed one: a table that vanished before
+  locking, or a lock the provider explicitly refused. Anything ambiguous, and
+  any failure at or after a confirmed lock or a submit, still pauses, so a table
+  is never held or booked twice. When every candidate fails, the pause reason
+  says how many were tried.
 - Targets that are due together run **concurrently**, so a lunch and a dinner
   target sharing a release time each fire at it instead of the second waiting
   behind the first one's lock and submit. One target failing does not stop the
@@ -30,7 +43,9 @@ deliberately relaxes the first two, and only those two; see
   returned, including times outside the configured earliest/latest window. A
   no-match pause reason summarizes it, and the console task table expands the
   full per-attempt evidence so "0 slot(s) were returned" can be distinguished
-  from "open times existed, but all outside my window". The detail is replaced
+  from "open times existed, but all outside my window". A time the run never
+  needed to look up is marked "Not checked: a better time was tried first". The
+  detail is replaced
   at the start of each new run and never influences slot selection.
 - Live booking is the default. Pass `--dry-run` to inspect timing, availability,
   and policy without locking or submitting.

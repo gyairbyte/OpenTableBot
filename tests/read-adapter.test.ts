@@ -295,4 +295,95 @@ describe("BrowserBridgeOpenTableReadAdapter", () => {
     expect("prepareBooking" in adapter).toBe(false);
     expect("book" in adapter).toBe(false);
   });
+
+  describe("booking-detail failures at preview time", () => {
+    class PreviewFailsClient extends FakeBridgeClient {
+      constructor(private readonly message: string) {
+        super();
+      }
+      override async getBookingPreview(): Promise<GetBookingPreviewResult> {
+        throw new BridgeClientError("PAGE_OPERATION_UNAVAILABLE", this.message);
+      }
+    }
+
+    it("treats a time whose dining area has vanished as a taken slot", async () => {
+      const adapter = new BrowserBridgeOpenTableReadAdapter(
+        new PreviewFailsClient(
+          'BOOKING_PREVIEW_DINING_AREA_UNKNOWN: Provider response contained no matching dining area (expected "default"; provider offered none)',
+        ),
+      );
+
+      await expect(adapter.getBookingPreview(makeTarget(), makeSlot())).rejects.toMatchObject({
+        category: AdapterFailureCategory.SLOT_DISAPPEARED,
+        disposition: "RETRY_WAITING",
+      });
+    });
+
+    it("keeps a conflicting dining-area identity as an unexpected response", async () => {
+      const adapter = new BrowserBridgeOpenTableReadAdapter(
+        new PreviewFailsClient(
+          "BOOKING_PREVIEW_DINING_AREA_CONFLICT: Provider reused a dining-area identity inconsistently",
+        ),
+      );
+
+      await expect(adapter.getBookingPreview(makeTarget(), makeSlot())).rejects.toMatchObject({
+        category: AdapterFailureCategory.UNEXPECTED_RESPONSE,
+      });
+    });
+  });
+
+  describe("looking up dining areas one time at a time", () => {
+    class CountingClient extends FakeBridgeClient {
+      discoveries = 0;
+      override async listDiningAreas(): Promise<ListDiningAreasResult> {
+        this.discoveries += 1;
+        return super.listDiningAreas();
+      }
+    }
+
+    it("finds open times without looking up any dining area", async () => {
+      const client = new CountingClient();
+      const adapter = new BrowserBridgeOpenTableReadAdapter(client);
+
+      const base = await adapter.findBaseSlots(makeTarget());
+
+      expect(base.candidates.length).toBeGreaterThan(0);
+      expect(base.observedSlots.length).toBeGreaterThan(0);
+      expect(client.discoveries).toBe(0);
+    });
+
+    it("establishes one time's dining area on request and records it", async () => {
+      const client = new CountingClient();
+      const adapter = new BrowserBridgeOpenTableReadAdapter(client);
+      const base = await adapter.findBaseSlots(makeTarget());
+      const candidate = base.candidates[0]!;
+
+      const found = await adapter.discoverDiningAreas(makeTarget(), candidate);
+
+      expect(client.discoveries).toBe(1);
+      expect(found.skippedReason).toBeUndefined();
+      expect(found.slots[0]?.diningArea).toBeDefined();
+      expect(candidate.observation.diningAreas).toEqual(
+        found.slots.map((slot) => slot.diningArea?.label),
+      );
+    });
+
+    it("reports a time it could not establish as skipped, with the reason", async () => {
+      const message = "BOOKING_PREVIEW_DINING_AREA_UNKNOWN: Provider response contained no matching dining area";
+      class UnestablishedClient extends FakeBridgeClient {
+        override async listDiningAreas(): Promise<ListDiningAreasResult> {
+          throw new BridgeClientError("PAGE_OPERATION_UNAVAILABLE", message);
+        }
+      }
+      const adapter = new BrowserBridgeOpenTableReadAdapter(new UnestablishedClient());
+      const base = await adapter.findBaseSlots(makeTarget());
+      const candidate = base.candidates[0]!;
+
+      const found = await adapter.discoverDiningAreas(makeTarget(), candidate);
+
+      expect(found.slots).toEqual([]);
+      expect(found.skippedReason).toBe(message);
+      expect(candidate.observation.diningAreaIssue).toBe(message);
+    });
+  });
 });

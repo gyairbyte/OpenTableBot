@@ -55,3 +55,15 @@ const SLOT_DINING_AREA_FAILURE_PATTERN = /\bBOOKING_PREVIEW_DINING_AREA_(?:UNKNO
 export function isSlotDiningAreaDiscoveryFailure(message: string): boolean {
   return SLOT_DINING_AREA_FAILURE_PATTERN.test(message);
 }
+
+/**
+ * `BOOKING_PREVIEW_DINING_AREA_UNKNOWN` at preview time means the details
+ * response no longer lists any matching dining area for a time that was offered
+ * moments earlier: the table has been taken. `..._CONFLICT` is a provider
+ * inconsistency, not a missing table, so it is deliberately not included.
+ */
+const SLOT_NO_LONGER_OFFERED_PATTERN = /\bBOOKING_PREVIEW_DINING_AREA_UNKNOWN:/;
+
+export function isSlotNoLongerOfferedFailure(message: string): boolean {
+  return SLOT_NO_LONGER_OFFERED_PATTERN.test(message);
+}

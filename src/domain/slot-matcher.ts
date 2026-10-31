@@ -94,6 +94,38 @@ function seatingTieBreakRank(slot: ReservationSlot): number {
   return slot.seatingType === "standard" ? 0 : 1;
 }
 
+/** Closest to the preferred time first, then earliest date, then earliest time. */
+function compareByPreferredTime(
+  preferredMinutes: number,
+  left: ReservationSlot,
+  right: ReservationSlot,
+): number {
+  return (
+    Math.abs(minutesSinceMidnight(left.localTime) - preferredMinutes) -
+      Math.abs(minutesSinceMidnight(right.localTime) - preferredMinutes) ||
+    compareText(left.localDate, right.localDate) ||
+    compareText(left.localTime, right.localTime)
+  );
+}
+
+/**
+ * Orders time-level slots before any dining-area detail is known, so the best
+ * time can be looked up and booked first. It only orders: dining-area policy is
+ * applied after discovery, once each slot's exact area is established.
+ */
+export function rankBaseSlots(
+  target: BookingTarget,
+  slots: readonly ReservationSlot[],
+): readonly ReservationSlot[] {
+  const preferredMinutes = minutesSinceMidnight(target.timeWindow.preferred);
+  return slots.toSorted(
+    (left, right) =>
+      compareByPreferredTime(preferredMinutes, left, right) ||
+      seatingTieBreakRank(left) - seatingTieBreakRank(right) ||
+      compareText(left.id, right.id),
+  );
+}
+
 export function rankAcceptableSlots(
   target: BookingTarget,
   slots: readonly ReservationSlot[],
@@ -105,17 +137,8 @@ export function rankAcceptableSlots(
 
   return eligible
     .toSorted((left, right) => {
-      const leftDistance = Math.abs(
-        minutesSinceMidnight(left.localTime) - preferredMinutes,
-      );
-      const rightDistance = Math.abs(
-        minutesSinceMidnight(right.localTime) - preferredMinutes,
-      );
-
       return (
-        leftDistance - rightDistance ||
-        compareText(left.localDate, right.localDate) ||
-        compareText(left.localTime, right.localTime) ||
+        compareByPreferredTime(preferredMinutes, left, right) ||
         diningAreaPreferenceRank(
           diningAreaPolicy,
           left.diningArea ?? legacyDiningArea(left),

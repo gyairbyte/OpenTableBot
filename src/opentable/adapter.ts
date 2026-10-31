@@ -1,4 +1,7 @@
-import type { DetailedAvailability } from "../domain/availability-detail.js";
+import type {
+  DetailedAvailability,
+  ObservedAvailabilitySlot,
+} from "../domain/availability-detail.js";
 import type { BookingTarget } from "../domain/booking-target.js";
 import type {
   BookingConfirmation,
@@ -66,6 +69,57 @@ export interface OpenTableReadAdapter {
   /** Search restaurants through the paired browser session, when supported. */
   searchRestaurants?(query: RestaurantSearchQuery): Promise<SafeSearchResults>;
   close?(): Promise<void>;
+}
+
+/** An observed open time that dining-area discovery fills in as it learns more. */
+export type ObservationRecord = ObservedAvailabilitySlot & {
+  diningAreas: string[];
+  diningAreaIssue?: string | undefined;
+};
+
+/** A time-level slot that has not had its exact dining area established yet. */
+export interface DiscoverableSlot {
+  /** Has a browser preview reference but no exact dining area. */
+  readonly slot: ReservationSlot;
+  /** This time's entry in the observed list; discovery records areas or why it was skipped. */
+  readonly observation: ObservationRecord;
+}
+
+export interface BaseAvailability {
+  /** Times that passed every check except dining-area policy, in provider order. */
+  readonly candidates: readonly DiscoverableSlot[];
+  /** Every open time the lookup saw, including rejected ones. */
+  readonly observedSlots: readonly ObservedAvailabilitySlot[];
+}
+
+export interface DiningAreaDiscovery {
+  /** Exact, policy-acceptable slots for one time; empty when it was skipped. */
+  readonly slots: readonly ReservationSlot[];
+  /** Set when this one time could not establish an exact dining area. */
+  readonly skippedReason?: string;
+}
+
+/**
+ * Optional capability: look up open times first and establish dining areas one
+ * time at a time. A booking run can then start on the best time without waiting
+ * for every other time's dining-area lookup.
+ */
+export interface LazyDiningAreaDiscovery {
+  findBaseSlots(target: BookingTarget): Promise<BaseAvailability>;
+  discoverDiningAreas(
+    target: BookingTarget,
+    candidate: DiscoverableSlot,
+  ): Promise<DiningAreaDiscovery>;
+}
+
+export function supportsLazyDiscovery<T extends OpenTableReadAdapter>(
+  adapter: T,
+): adapter is T & LazyDiningAreaDiscovery {
+  const candidate = adapter as Partial<LazyDiningAreaDiscovery>;
+  return (
+    typeof candidate.findBaseSlots === "function" &&
+    typeof candidate.discoverDiningAreas === "function"
+  );
 }
 
 /** Future write-capable adapter. Phase 1 does not implement this interface. */

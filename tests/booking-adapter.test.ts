@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AuthenticationStatus } from "../src/opentable/adapter.js";
+import { supportsLazyDiscovery, type AuthenticationStatus } from "../src/opentable/adapter.js";
 import { BrowserBridgeOpenTableBookingAdapter, type OpenTableBookingBridgeClientPort } from "../src/opentable/bridge/booking-adapter.js";
 import type { AcknowledgeLockResult, AuthorizeBookingResult, BookingIntent, FindSlotsResult, GetBookingPreviewResult, LockSlotResult, RevalidatePreparedBookingResult, SubmitReservationResult } from "../src/opentable/bridge/protocol.js";
 import { makePreview, makeSlot, makeTarget } from "./fixtures.js";
@@ -116,6 +116,15 @@ describe("browser booking adapter", () => {
     const authorization = await adapter.authorizeBooking(makeTarget(), makeSlot(), preview);
     return { preview, handle: authorization.authorizationHandle };
   }
+
+  // The scheduler runs against this adapter, not the read adapter it wraps. If
+  // it stops forwarding lazy discovery, every run silently falls back to looking
+  // up every time's dining area before the first booking attempt.
+  it("exposes lazy dining-area discovery so a booking run can use it", () => {
+    const adapter = new BrowserBridgeOpenTableBookingAdapter(clientFixture());
+
+    expect(supportsLazyDiscovery(adapter)).toBe(true);
+  });
 
   it("returns PreparedBooking only after a valid lock and post-lock preview", async () => {
     const adapter = new BrowserBridgeOpenTableBookingAdapter(clientFixture());
