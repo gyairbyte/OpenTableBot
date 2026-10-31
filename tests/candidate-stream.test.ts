@@ -128,6 +128,43 @@ describe("lazyCandidateStream", () => {
     expect(asked.sort()).toEqual(["early-order", "late-order"]);
   });
 
+  it("looks up the slots at one time in parallel, but never fetches a later time ahead", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const asked: string[] = [];
+    const adapter: LazyDiningAreaDiscovery = {
+      findBaseSlots: vi.fn(),
+      discoverDiningAreas: vi.fn(
+        async (_target, candidate: DiscoverableSlot): Promise<DiningAreaDiscovery> => {
+          asked.push(candidate.slot.id);
+          inFlight += 1;
+          peak = Math.max(peak, inFlight);
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          inFlight -= 1;
+          return {
+            slots: [
+              makeSlot({
+                id: `exact-${candidate.slot.id}`,
+                localTime: candidate.slot.localTime,
+              }),
+            ],
+          };
+        },
+      ),
+    };
+    const base = baseOf(
+      candidateAt("12:30", "standard-12:30"),
+      candidateAt("12:30", "outdoor-12:30"),
+      candidateAt("13:00"),
+    );
+    const stream = lazyCandidateStream(adapter, target, base, { preferredOnly: false });
+
+    await stream.next();
+
+    expect(peak).toBe(2);
+    expect(asked.sort()).toEqual(["outdoor-12:30", "standard-12:30"]);
+  });
+
   it("skips a time that cannot be established and carries on", async () => {
     const { adapter } = discovery(new Set(["base-12:30"]));
     const stream = lazyCandidateStream(adapter, target, all(), { preferredOnly: false });

@@ -99,9 +99,14 @@ export function lazyCandidateStream(
     const group = groups[nextGroup];
     nextGroup += 1;
     if (group === undefined) return;
+    // Slots at one time (for example Standard and Outdoor) are independent
+    // lookups the run needs together, so they go out together. Different times
+    // are never fetched ahead: a later time may never be needed.
+    const discoveries = await Promise.all(
+      group.map((candidate) => adapter.discoverDiningAreas(target, candidate)),
+    );
     const found: ReservationSlot[] = [];
-    for (const candidate of group) {
-      const discovery = await adapter.discoverDiningAreas(target, candidate);
+    for (const discovery of discoveries) {
       if (discovery.skippedReason !== undefined) {
         skipped.push(discovery.skippedReason);
         continue;
